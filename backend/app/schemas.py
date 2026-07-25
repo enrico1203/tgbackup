@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -96,7 +97,9 @@ class JobIn(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     account_id: int
     channel_id: int
-    local_path: str = Field(min_length=1)
+    source_type: Literal["local", "rclone"] = "local"
+    local_path: str = ""
+    remote: str | None = None
     interval_hours: float = Field(gt=0, le=24 * 365)
     scan_files_per_sec: int = Field(default=0, ge=0)
     part_size_bytes: int | None = None
@@ -106,7 +109,9 @@ class JobIn(BaseModel):
 class JobUpdate(BaseModel):
     name: str | None = None
     channel_id: int | None = None
+    source_type: Literal["local", "rclone"] | None = None
     local_path: str | None = None
+    remote: str | None = None
     interval_hours: float | None = Field(default=None, gt=0, le=24 * 365)
     scan_files_per_sec: int | None = Field(default=None, ge=0)
     part_size_bytes: int | None = None
@@ -127,7 +132,9 @@ class JobOut(Model):
     name: str
     account_id: int
     channel_id: int
+    source_type: str
     local_path: str
+    remote: str | None
     interval_hours: float
     scan_files_per_sec: int
     part_size_bytes: int
@@ -200,6 +207,27 @@ class RestoreIn(BaseModel):
 class RestoreOut(BaseModel):
     restore_id: str
     target_path: str
+
+
+# rclone
+
+
+class RcloneConfigIn(BaseModel):
+    content: str
+
+
+class RcloneStatusOut(BaseModel):
+    configured: bool
+    version: str
+    remotes: list[str]
+    config_lines: int
+    updated_at: datetime | None
+    error: str | None
+
+
+class RemoteCheckOut(BaseModel):
+    ok: bool
+    error: str | None
 
 
 # Dashboard

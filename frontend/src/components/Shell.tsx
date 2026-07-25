@@ -8,6 +8,7 @@ import {
   LogOut,
   Moon,
   RefreshCcw,
+  SlidersHorizontal,
   Sun,
   Users,
 } from "lucide-react";
@@ -23,6 +24,7 @@ const NAV = [
   { to: "/accounts", label: "Account Telegram", icon: Users, end: false },
   { to: "/files", label: "File e restore", icon: Archive, end: false },
   { to: "/runs", label: "Storico", icon: History, end: false },
+  { to: "/settings", label: "Impostazioni", icon: SlidersHorizontal, end: false },
 ];
 
 const TITLES: Record<string, string> = {
@@ -31,6 +33,7 @@ const TITLES: Record<string, string> = {
   "/accounts": "Account Telegram",
   "/files": "File e restore",
   "/runs": "Storico esecuzioni",
+  "/settings": "Impostazioni",
 };
 
 export default function Shell() {

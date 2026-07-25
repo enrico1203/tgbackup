@@ -60,7 +60,9 @@ export interface Job {
   name: string;
   account_id: number;
   channel_id: number;
+  source_type: "local" | "rclone";
   local_path: string;
+  remote: string | null;
   interval_hours: number;
   scan_files_per_sec: number;
   part_size_bytes: number;
@@ -116,6 +118,15 @@ export interface FileEntry {
 export interface FilePage {
   items: FileEntry[];
   total: number;
+}
+
+export interface RcloneStatus {
+  configured: boolean;
+  version: string;
+  remotes: string[];
+  config_lines: number;
+  updated_at: string | null;
+  error: string | null;
 }
 
 export interface RestoreOut {

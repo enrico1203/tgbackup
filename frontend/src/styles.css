@@ -464,8 +464,19 @@ a {
   color: var(--muted);
 }
 
+textarea.config-box {
+  min-height: 260px;
+  resize: vertical;
+  line-height: 1.5;
+  tab-size: 2;
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
+}
+
 input,
-select {
+select,
+textarea {
   background: var(--elevated);
   border: 1px solid var(--hairline);
   border-radius: var(--radius-control);
@@ -478,7 +489,8 @@ select {
 }
 
 input:focus,
-select:focus {
+select:focus,
+textarea:focus {
   border-color: var(--accent);
   outline: none;
 }

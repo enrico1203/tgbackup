@@ -10,6 +10,7 @@ import Files from "./pages/Files";
 import Jobs from "./pages/Jobs";
 import Login from "./pages/Login";
 import Runs from "./pages/Runs";
+import Settings from "./pages/Settings";
 import { Spinner } from "./components/ui";
 
 export default function App() {
@@ -39,6 +40,7 @@ export default function App() {
             <Route path="accounts" element={<Accounts />} />
             <Route path="files" element={<Files />} />
             <Route path="runs" element={<Runs />} />
+            <Route path="settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

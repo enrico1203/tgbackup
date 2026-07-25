@@ -31,5 +31,9 @@ class Settings(BaseSettings):
     def restore_dir(self) -> Path:
         return self.data_dir / "restore"
 
+    @property
+    def rclone_config_path(self) -> Path:
+        return self.data_dir / "rclone.conf"
+
 
 settings = Settings()

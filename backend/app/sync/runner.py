@@ -22,7 +22,7 @@ from ..models import Channel, FileEntry, FilePart, JobRun, SyncJob, utcnow
 from ..telegram.fast_transfer import upload_slice
 from ..telegram.manager import manager
 from .progress import hub
-from .scanner import scan
+from .source import build_source
 
 log = logging.getLogger(__name__)
 
@@ -117,11 +117,10 @@ class JobRunner:
             await session.commit()
             run_id = run.id
             job_name = job.name
-            local_path = job.local_path
-            files_per_sec = job.scan_files_per_sec
             part_size = job.part_size_bytes
             account_id = job.account_id
             peer = manager.input_peer(channel)
+            source = build_source(job)
 
         progress = hub.start_job(self.job_id, job_name)
         progress.phase = "scan"
@@ -130,7 +129,7 @@ class JobRunner:
             client = await manager.get_client(account_id)
             entity = peer
 
-            counters = await self._diff(local_path, files_per_sec, run_id, progress)
+            counters = await self._diff(source, run_id, progress)
             self._check_cancel()
 
             progress.phase = "delete"
@@ -141,7 +140,7 @@ class JobRunner:
             progress.phase = "upload"
             await self._set_phase("upload")
             uploaded_files, uploaded_bytes = await self._upload_pending(
-                client, entity, part_size, progress
+                client, entity, part_size, progress, source
             )
 
             async with SessionLocal() as session:
@@ -176,16 +175,14 @@ class JobRunner:
 
     # Scansione e confronto
 
-    async def _diff(
-        self, local_path: str, files_per_sec: int, run_id: int, progress
-    ) -> dict:
+    async def _diff(self, source, run_id: int, progress) -> dict:
         def report(files: int, dirs: int, total_bytes: int, where: str) -> None:
             progress.scanned_files = files
             progress.scanned_dirs = dirs
             progress.scanned_bytes = total_bytes
             progress.scanned_where = where or None
 
-        found = await scan(local_path, files_per_sec, on_progress=report)
+        found = await source.list_files(on_progress=report)
         self._check_cancel()
 
         progress.phase = "diff"
@@ -304,7 +301,9 @@ class JobRunner:
 
     # Upload
 
-    async def _upload_pending(self, client, entity, part_size: int, progress) -> tuple[int, int]:
+    async def _upload_pending(
+        self, client, entity, part_size: int, progress, source
+    ) -> tuple[int, int]:
         async with SessionLocal() as session:
             totals = await session.execute(
                 select(func.count(FileEntry.id), func.coalesce(func.sum(FileEntry.size), 0)).where(
@@ -320,7 +319,6 @@ class JobRunner:
 
         uploaded_files = 0
         uploaded_bytes = 0
-        root = await self._job_path()
 
         while True:
             self._check_cancel()
@@ -340,14 +338,12 @@ class JobRunner:
                 rel_path = entry.rel_path
                 name = entry.name
                 size = entry.size
-                mtime_ns = entry.mtime_ns
 
-            absolute = os.path.join(root, rel_path)
             progress.current_file = rel_path
 
             try:
                 sent = await self._upload_one(
-                    client, entity, absolute, rel_path, name, size, part_size,
+                    client, entity, source, rel_path, name, size, part_size,
                     progress, file_id
                 )
             except JobCancelled:
@@ -386,16 +382,11 @@ class JobRunner:
             uploaded_bytes += size
             progress.files_done += 1
 
-    async def _job_path(self) -> str:
-        async with SessionLocal() as session:
-            job = await session.get(SyncJob, self.job_id)
-            return job.local_path if job else ""
-
     async def _upload_one(
         self,
         client,
         entity,
-        absolute: str,
+        source,
         rel_path: str,
         name: str,
         size: int,
@@ -418,7 +409,7 @@ class JobRunner:
             file_name = part_file_name(name, index, len(slices))
 
             handle = await self._upload_with_retry(
-                client, absolute, offset, length, file_name, progress
+                client, source, rel_path, offset, length, file_name, progress
             )
 
             caption = build_caption(rel_path, name, index, len(slices))
@@ -447,20 +438,22 @@ class JobRunner:
         return len(slices)
 
     async def _upload_with_retry(
-        self, client, absolute: str, offset: int, length: int, file_name: str, progress
+        self, client, source, rel_path: str, offset: int, length: int, file_name: str, progress
     ):
         attempt = 0
         while True:
             attempt += 1
             try:
+                # Il lettore si ricrea a ogni tentativo: su un remote significa
+                # riaprire la richiesta con intervallo dal punto giusto.
                 return await upload_slice(
                     client,
-                    absolute,
-                    offset,
+                    source.reader(rel_path, offset, length),
                     length,
                     file_name,
                     on_progress=progress.add_bytes,
                     cancel=self.cancel,
+                    source=f"{source.label}/{rel_path}",
                 )
             except FloodWaitError as exc:
                 log.warning("Flood wait di %ss durante l'upload di %s", exc.seconds, file_name)

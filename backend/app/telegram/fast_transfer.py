@@ -161,18 +161,52 @@ class ParallelTransferrer:
         return sender
 
 
+class LocalSliceReader:
+    """Lettore sequenziale di un intervallo di byte da un file locale.
+
+    Espone la stessa interfaccia del lettore rclone, cosi l'uploader non sa da dove
+    arrivino i byte. Usa letture posizionali, quindi non sposta il cursore del file.
+    """
+
+    def __init__(self, path: str, offset: int, length: int) -> None:
+        self._path = path
+        self._position = offset
+        self._remaining = length
+        self._handle: int | None = None
+
+    async def __aenter__(self) -> "LocalSliceReader":
+        self._handle = await asyncio.to_thread(os.open, self._path, os.O_RDONLY)
+        return self
+
+    async def read(self, size: int) -> bytes:
+        assert self._handle is not None
+        wanted = min(size, self._remaining)
+        if wanted <= 0:
+            return b""
+        data = await asyncio.to_thread(os.pread, self._handle, wanted, self._position)
+        self._position += len(data)
+        self._remaining -= len(data)
+        return data
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        if self._handle is not None:
+            await asyncio.to_thread(os.close, self._handle)
+            self._handle = None
+
+
 async def upload_slice(
     client: TelegramClient,
-    path: str,
-    offset: int,
+    reader,
     length: int,
     file_name: str,
     on_progress: ProgressCallback | None = None,
     cancel: asyncio.Event | None = None,
+    source: str = "",
 ) -> InputFile | InputFileBig:
-    """Carica i byte [offset, offset+length) di un file e restituisce l'handle Telegram.
+    """Carica `length` byte presi da `reader` e restituisce l'handle Telegram.
 
-    Non produce file temporanei: la fetta viene letta direttamente dal file originale.
+    `reader` e un contesto asincrono con un metodo read(size): puo essere un file
+    locale o un flusso rclone. In nessuno dei due casi si scrive su disco.
     """
     if length <= 0:
         raise ValueError("La fetta da caricare e vuota")
@@ -203,32 +237,29 @@ async def upload_slice(
     ]
 
     md5 = hashlib.md5() if not is_big else None
-    handle = await asyncio.to_thread(os.open, path, os.O_RDONLY)
     try:
-        remaining = length
-        position = offset
-        ticker = 0
-        while remaining > 0:
-            if cancel is not None and cancel.is_set():
-                raise asyncio.CancelledError("Upload interrotto")
-            size = min(UPLOAD_PART_SIZE, remaining)
-            chunk = await asyncio.to_thread(os.pread, handle, size, position)
-            if not chunk:
-                raise OSError(
-                    f"Il file {path} si e accorciato durante l'upload: "
-                    f"mancano {remaining} byte da offset {position}"
-                )
-            if md5 is not None:
-                md5.update(chunk)
-            await senders[ticker].send(chunk)
-            ticker = (ticker + 1) % connections
-            position += len(chunk)
-            remaining -= len(chunk)
+        async with reader:
+            remaining = length
+            ticker = 0
+            while remaining > 0:
+                if cancel is not None and cancel.is_set():
+                    raise asyncio.CancelledError("Upload interrotto")
+                size = min(UPLOAD_PART_SIZE, remaining)
+                chunk = await reader.read(size)
+                if not chunk:
+                    raise OSError(
+                        f"La sorgente {source or file_name} si e esaurita prima del "
+                        f"previsto: mancano {remaining} byte"
+                    )
+                if md5 is not None:
+                    md5.update(chunk)
+                await senders[ticker].send(chunk)
+                ticker = (ticker + 1) % connections
+                remaining -= len(chunk)
 
-        for sender in senders:
-            await sender.drain()
+            for sender in senders:
+                await sender.drain()
     finally:
-        await asyncio.to_thread(os.close, handle)
         await asyncio.gather(
             *(sender.disconnect() for sender in senders), return_exceptions=True
         )

@@ -1,13 +1,22 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router";
-import { CloudUpload, Pencil, Play, Plus, Square, Trash2 } from "lucide-react";
+import {
+  CloudUpload,
+  FolderOpen,
+  HardDrive,
+  Pencil,
+  Play,
+  Plus,
+  Square,
+  Trash2,
+} from "lucide-react";
 
 import { api } from "../lib/api";
 import { formatBytes, formatDateTime, formatInterval } from "../lib/format";
 import { useProgress } from "../lib/progress";
 import JobActivity, { phaseLabel } from "../components/JobActivity";
-import type { Account, Channel, Job } from "../lib/types";
+import type { Account, Channel, Job, RcloneStatus } from "../lib/types";
 import {
   Alert,
   Card,
@@ -34,7 +43,9 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
   const [name, setName] = useState(job?.name ?? "");
   const [accountId, setAccountId] = useState<number | null>(job?.account_id ?? null);
   const [channelId, setChannelId] = useState<number | null>(job?.channel_id ?? null);
+  const [sourceType, setSourceType] = useState<"local" | "rclone">(job?.source_type ?? "local");
   const [localPath, setLocalPath] = useState(job?.local_path ?? "");
+  const [remote, setRemote] = useState(job?.remote ?? "");
   const [intervalHours, setIntervalHours] = useState(String(job?.interval_hours ?? 24));
   const [scanRate, setScanRate] = useState(String(job?.scan_files_per_sec ?? 0));
   const [partSize, setPartSize] = useState(
@@ -46,6 +57,11 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
     queryKey: ["channels", accountId],
     queryFn: () => api.get<Channel[]>(`/api/accounts/${accountId}/channels`),
     enabled: accountId !== null,
+  });
+
+  const { data: rcloneStatus } = useQuery({
+    queryKey: ["rclone"],
+    queryFn: () => api.get<RcloneStatus>("/api/rclone"),
   });
 
   const account = accounts?.find((item) => item.id === accountId);
@@ -62,7 +78,9 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
         name: name.trim(),
         account_id: accountId,
         channel_id: channelId,
-        local_path: localPath.trim(),
+        source_type: sourceType,
+        local_path: sourceType === "local" ? localPath.trim() : "",
+        remote: sourceType === "rclone" ? remote.trim() : null,
         interval_hours: Number(intervalHours),
         scan_files_per_sec: Number(scanRate),
         part_size_bytes: Math.round(Number(partSize) * GIGA),
@@ -82,8 +100,9 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
   });
 
   const privateChannels = (channels ?? []).filter((channel) => channel.is_private);
+  const sourceReady = sourceType === "local" ? Boolean(localPath.trim()) : Boolean(remote.trim());
   const valid =
-    name.trim() && accountId !== null && channelId !== null && localPath.trim() &&
+    Boolean(name.trim()) && accountId !== null && channelId !== null && sourceReady &&
     Number(intervalHours) > 0 && Number(partSize) > 0;
 
   return (
@@ -152,17 +171,74 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
         </Field>
       </div>
 
-      <Field
-        label="Cartella locale"
-        hint="Percorso interno al container, cosi come e montato nel docker-compose.yml."
-      >
-        <input
-          value={localPath}
-          onChange={(e) => setLocalPath(e.target.value)}
-          placeholder="/mnt/documenti"
-          className="mono"
-        />
+      <Field label="Sorgente dei file">
+        <div className="row" style={{ gap: 8 }}>
+          <button
+            type="button"
+            className={sourceType === "local" ? "btn small" : "btn ghost small"}
+            onClick={() => setSourceType("local")}
+          >
+            <FolderOpen size={13} />
+            Cartella locale
+          </button>
+          <button
+            type="button"
+            className={sourceType === "rclone" ? "btn small" : "btn ghost small"}
+            onClick={() => setSourceType("rclone")}
+            disabled={!rcloneStatus?.configured}
+            title={
+              rcloneStatus?.configured
+                ? undefined
+                : "Incolla prima il rclone.conf nella pagina Impostazioni"
+            }
+          >
+            <HardDrive size={13} />
+            Remote rclone
+          </button>
+        </div>
       </Field>
+
+      {sourceType === "local" ? (
+        <Field
+          label="Cartella locale"
+          hint="Percorso interno al container, cosi come e montato nel docker-compose.yml."
+        >
+          <input
+            value={localPath}
+            onChange={(e) => setLocalPath(e.target.value)}
+            placeholder="/mnt/documenti"
+            className="mono"
+          />
+        </Field>
+      ) : (
+        <Field
+          label="Remote rclone"
+          hint="Nome del remote con i due punti, eventualmente seguito da una sottocartella. Letto via API, senza mount."
+        >
+          <div className="row" style={{ gap: 8 }}>
+            <select
+              style={{ width: 190 }}
+              value={(rcloneStatus?.remotes ?? []).find((r) => remote.startsWith(r)) ?? ""}
+              onChange={(e) => setRemote(e.target.value)}
+            >
+              <option value="" disabled>
+                Scegli un remote
+              </option>
+              {(rcloneStatus?.remotes ?? []).map((item) => (
+                <option key={item} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
+            <input
+              value={remote}
+              onChange={(e) => setRemote(e.target.value)}
+              placeholder="miocloud-crypt:Film"
+              className="mono"
+            />
+          </div>
+        </Field>
+      )}
 
       <div className="grid-2">
         <Field label="Ogni quante ore" hint="L'attesa parte dalla fine dell'esecuzione precedente.">
@@ -274,7 +350,12 @@ function JobCard({ job, onEdit }: { job: Job; onEdit: (job: Job) => void }) {
         {remove.isError ? <Alert>{(remove.error as Error).message}</Alert> : null}
 
         <div className="row wrap" style={{ gap: 24, fontSize: 12.5, color: "var(--muted)" }}>
-          <span className="mono">{job.local_path}</span>
+          <span className="row" style={{ gap: 6 }}>
+            {job.source_type === "rclone" ? <HardDrive size={12} /> : <FolderOpen size={12} />}
+            <span className="mono">
+              {job.source_type === "rclone" ? job.remote : job.local_path}
+            </span>
+          </span>
           <span>verso {job.channel_title}</span>
           <span>account {job.account_label}</span>
           <span>ogni {formatInterval(job.interval_hours)}</span>

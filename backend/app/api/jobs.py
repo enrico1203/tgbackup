@@ -5,6 +5,7 @@ from sqlalchemy import case, func, select
 
 from ..deps import ActiveUserDep, SessionDep
 from ..models import Channel, FileEntry, JobRun, SyncJob, TelegramAccount
+from ..rclone import client as rclone
 from ..schemas import JobIn, JobOut, JobRunOut, JobStats, JobUpdate
 from ..sync.scheduler import scheduler
 
@@ -63,7 +64,14 @@ async def get_job(job_id: int, session: SessionDep, _: ActiveUserDep) -> JobOut:
     return await _to_out(session, job)
 
 
-async def _validate(session, account_id: int, channel_id: int, local_path: str) -> Channel:
+async def _validate(
+    session,
+    account_id: int,
+    channel_id: int,
+    source_type: str,
+    local_path: str,
+    remote: str | None,
+) -> Channel:
     account = await session.get(TelegramAccount, account_id)
     if account is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Account Telegram non trovato")
@@ -74,25 +82,50 @@ async def _validate(session, account_id: int, channel_id: int, local_path: str) 
             status.HTTP_400_BAD_REQUEST, "Il canale non appartiene a questo account"
         )
 
-    if not os.path.isdir(local_path):
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"La cartella {local_path} non esiste dentro il container. "
-            "Aggiungila come volume nel docker-compose.yml e riavvia il backend.",
-        )
+    if source_type == "rclone":
+        if not remote:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, "Indica il remote rclone da sincronizzare"
+            )
+        try:
+            await rclone.check_remote(remote)
+        except rclone.RcloneError as exc:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, f"Il remote {remote} non risponde: {exc}"
+            ) from exc
+    else:
+        if not local_path:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, "Indica la cartella locale da sincronizzare"
+            )
+        if not os.path.isdir(local_path):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"La cartella {local_path} non esiste dentro il container. "
+                "Aggiungila come volume nel docker-compose.yml e riavvia il backend.",
+            )
     return channel
 
 
 @router.post("", response_model=JobOut, status_code=status.HTTP_201_CREATED)
 async def create_job(payload: JobIn, session: SessionDep, _: ActiveUserDep) -> JobOut:
-    await _validate(session, payload.account_id, payload.channel_id, payload.local_path)
+    await _validate(
+        session,
+        payload.account_id,
+        payload.channel_id,
+        payload.source_type,
+        payload.local_path,
+        payload.remote,
+    )
     account = await session.get(TelegramAccount, payload.account_id)
 
     job = SyncJob(
         name=payload.name,
         account_id=payload.account_id,
         channel_id=payload.channel_id,
-        local_path=payload.local_path.rstrip("/") or "/",
+        source_type=payload.source_type,
+        local_path=(payload.local_path.rstrip("/") or "/") if payload.source_type == "local" else "",
+        remote=payload.remote.strip() if payload.remote else None,
         interval_hours=payload.interval_hours,
         scan_files_per_sec=payload.scan_files_per_sec,
         part_size_bytes=payload.part_size_bytes or account.default_part_size,
@@ -117,10 +150,15 @@ async def update_job(
         )
 
     data = payload.model_dump(exclude_unset=True)
-    channel_id = data.get("channel_id", job.channel_id)
-    local_path = data.get("local_path", job.local_path)
-    if "channel_id" in data or "local_path" in data:
-        await _validate(session, job.account_id, channel_id, local_path)
+    if {"channel_id", "local_path", "remote", "source_type"} & data.keys():
+        await _validate(
+            session,
+            job.account_id,
+            data.get("channel_id", job.channel_id),
+            data.get("source_type", job.source_type),
+            data.get("local_path", job.local_path),
+            data.get("remote", job.remote),
+        )
 
     for field, value in data.items():
         setattr(job, field, value)

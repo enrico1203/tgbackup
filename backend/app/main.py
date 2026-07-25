@@ -5,8 +5,9 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
-from .api import accounts, auth, dashboard, files, jobs, ws
+from .api import accounts, auth, dashboard, files, jobs, rclone, ws
 from .db import SessionLocal, engine
+from .migrate import ensure_schema
 from .models import Base, User
 from .security import hash_password
 from .sync.progress import hub
@@ -39,8 +40,13 @@ async def seed_admin() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     async with engine.begin() as connection:
+        await ensure_schema(connection)
         await connection.run_sync(Base.metadata.create_all)
     await seed_admin()
+
+    # rclone vuole un file: si riscrive da quello cifrato nel database a ogni avvio.
+    async with SessionLocal() as session:
+        await rclone.sync_config_to_disk(session)
 
     hub.start()
     await manager.restore_sessions()
@@ -62,6 +68,7 @@ app.include_router(accounts.router)
 app.include_router(jobs.router)
 app.include_router(files.router)
 app.include_router(dashboard.router)
+app.include_router(rclone.router)
 app.include_router(ws.router)
 
 

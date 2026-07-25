@@ -87,7 +87,12 @@ class SyncJob(Base):
     name: Mapped[str] = mapped_column(String(128))
     account_id: Mapped[int] = mapped_column(ForeignKey("telegram_accounts.id", ondelete="CASCADE"))
     channel_id: Mapped[int] = mapped_column(ForeignKey("channels.id", ondelete="CASCADE"))
-    local_path: Mapped[str] = mapped_column(Text)
+
+    # local: cartella montata nel container. rclone: remote letto via API, senza mount.
+    source_type: Mapped[str] = mapped_column(String(16), default="local")
+    local_path: Mapped[str] = mapped_column(Text, default="")
+    # Percorso rclone completo, ad esempio "jottamio-crypt:" oppure "gdrive:Foto".
+    remote: Mapped[str | None] = mapped_column(Text)
 
     interval_hours: Mapped[float] = mapped_column(Float, default=24.0)
     # 0 = nessun limite. Sopra a zero e il tetto di file esaminati al secondo.
@@ -148,6 +153,18 @@ class FilePart(Base):
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     file: Mapped[FileEntry] = relationship(back_populates="parts")
+
+
+class Setting(Base):
+    """Impostazioni globali. Il valore puo essere cifrato: lo dice `encrypted`."""
+
+    __tablename__ = "settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    key: Mapped[str] = mapped_column(String(64), unique=True)
+    value: Mapped[str] = mapped_column(Text)
+    encrypted: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class JobRun(Base):
