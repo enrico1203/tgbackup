@@ -1,0 +1,29 @@
+# Ambiente / segreti
+.env
+.env.*
+*.local
+config.local.*
+secrets/
+
+# Dipendenze
+node_modules/
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Build / output
+dist/
+build/
+*.egg-info/
+
+# Log e temporanei
+*.log
+tmp/
+.cache/
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
