@@ -23,6 +23,13 @@ class Settings(BaseSettings):
     scheduler_tick_seconds: int = 10
     progress_interval_seconds: float = 1.0
 
+    # Timeout rclone. Sono reti di sicurezza contro un remote che non risponde, non
+    # limiti di lavoro: elenco e anteprima si fermano da soli alle voci che servono,
+    # mentre la scansione di un job puo durare a lungo su remote enormi.
+    rclone_check_timeout: float = 600.0
+    rclone_preview_timeout: float = 600.0
+    rclone_list_timeout: float = 6 * 3600.0
+
     @property
     def db_path(self) -> Path:
         return self.data_dir / "tgbackup.db"

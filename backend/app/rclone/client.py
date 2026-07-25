@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 from dataclasses import dataclass
 
@@ -31,6 +32,23 @@ BASE_ARGS = ["--config", str(settings.rclone_config_path), "--log-level", "ERROR
 
 class RcloneError(Exception):
     """Errore da mostrare direttamente all'utente."""
+
+
+def _clean_error(raw: bytes | str) -> str:
+    """Ripulisce lo stderr di rclone per mostrarlo in interfaccia.
+
+    Le righe arrivano come "2026/07/25 22:10:43 ERROR : messaggio": data, ora e
+    livello non dicono nulla all'utente e nascondono il messaggio vero.
+    """
+    text = raw.decode(errors="replace") if isinstance(raw, bytes) else raw
+    lines = []
+    for line in text.strip().splitlines():
+        cleaned = re.sub(r"^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}\s+", "", line.strip())
+        cleaned = re.sub(r"^(CRITICAL|ERROR|NOTICE|WARNING|INFO|DEBUG)\s*:\s*", "", cleaned)
+        cleaned = re.sub(r"^Failed to \w+ .*?: ", "", cleaned)
+        if cleaned and cleaned not in lines:
+            lines.append(cleaned)
+    return " | ".join(lines)[:400] or "errore sconosciuto"
 
 
 @dataclass(slots=True)
@@ -77,8 +95,7 @@ async def _run(args: list[str], timeout: float = 120.0) -> str:
         raise RcloneError(f"rclone non ha risposto entro {timeout:.0f} secondi") from None
 
     if process.returncode != 0:
-        message = stderr.decode(errors="replace").strip() or "errore sconosciuto"
-        raise RcloneError(message[:500])
+        raise RcloneError(_clean_error(stderr))
     return stdout.decode(errors="replace")
 
 
@@ -94,9 +111,107 @@ async def list_remotes() -> list[str]:
     return [line.strip() for line in output.splitlines() if line.strip()]
 
 
+async def _stream_lsjson(
+    target: str,
+    extra_args: list[str],
+    timeout: float,
+    max_items: int | None = None,
+    on_item=None,
+) -> list[dict]:
+    """Legge l'uscita di lsjson man mano che arriva, fermandosi quando basta.
+
+    lsjson stampa un oggetto per riga, quindi non serve attendere la fine per avere
+    i primi risultati. Con `max_items` il processo viene chiuso appena raggiunto il
+    numero richiesto: cosi elencare le prime voci di una cartella con decine di
+    migliaia di file costa quanto elencarne una piccola, invece di dover attendere
+    la decifratura di tutti i nomi.
+    """
+    process = await asyncio.create_subprocess_exec(
+        RCLONE,
+        *BASE_ARGS,
+        "lsjson",
+        *extra_args,
+        target,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        limit=8 * 1024 * 1024,
+    )
+
+    items: list[dict] = []
+    buffer: list[str] = []
+    stopped_early = False
+    seen = 0
+    # Chi raccoglie da se con on_item non ha bisogno che si tenga anche una copia:
+    # su un remote da centinaia di migliaia di file sarebbe memoria doppia per nulla.
+    keep = on_item is None or max_items is not None
+
+    async def pump() -> None:
+        nonlocal stopped_early, seen
+        assert process.stdout is not None
+        while True:
+            raw = await process.stdout.readline()
+            if not raw:
+                return
+            line = raw.decode(errors="replace").strip().rstrip(",")
+            if line in ("[", "]", ""):
+                continue
+            buffer.append(line)
+            if not line.endswith("}"):
+                continue
+            candidate = "".join(buffer)
+            buffer.clear()
+            try:
+                item = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            seen += 1
+            if keep:
+                items.append(item)
+            if on_item is not None:
+                on_item(item, seen)
+            if max_items is not None and seen >= max_items:
+                stopped_early = True
+                return
+
+    try:
+        await asyncio.wait_for(pump(), timeout)
+    except TimeoutError:
+        process.kill()
+        await process.wait()
+        raise RcloneError(
+            f"rclone non ha risposto entro {timeout:.0f} secondi per {target}"
+        ) from None
+
+    if stopped_early:
+        # Chiusura voluta: l'uscita non nulla che ne deriva non e un errore.
+        if process.returncode is None:
+            process.kill()
+        await process.wait()
+        return items
+
+    stderr = b""
+    if process.stderr is not None:
+        stderr = await process.stderr.read()
+    await process.wait()
+    if process.returncode != 0:
+        raise RcloneError(
+            _clean_error(stderr) if stderr else f"lsjson di {target} fallito"
+        )
+    return items
+
+
 async def check_remote(remote: str) -> None:
-    """Verifica che il remote risponda, senza elencarlo tutto."""
-    await _run(["lsjson", "--max-depth", "1", _normalize(remote)], timeout=60)
+    """Verifica che il remote risponda.
+
+    Si ferma alla prima voce ricevuta: il costo non dipende da quante ne contiene la
+    cartella. Una cartella vuota fa uscire rclone con successo e va bene lo stesso.
+    """
+    await _stream_lsjson(
+        _normalize(remote),
+        ["--max-depth", "1", "--no-mimetype"],
+        timeout=settings.rclone_check_timeout,
+        max_items=1,
+    )
 
 
 @dataclass(slots=True)
@@ -111,19 +226,20 @@ class RemoteEntry:
 async def preview(remote: str, limit: int = 20) -> list[RemoteEntry]:
     """Primo livello di un remote, per farsi un'idea del contenuto.
 
-    Si ferma alla profondita uno: su un remote con centinaia di migliaia di file
-    un elenco ricorsivo richiederebbe minuti, mentre qui bastano pochi secondi.
+    Profondita uno e lettura in streaming che si ferma alle prime `limit` voci: su
+    una cartella con decine di migliaia di file un elenco completo richiederebbe
+    minuti, qui il costo non dipende da quanto e piena.
     """
-    output = await _run(
-        ["lsjson", "--max-depth", "1", "--no-mimetype", _normalize(remote)], timeout=120
+    items = await _stream_lsjson(
+        _normalize(remote),
+        ["--max-depth", "1", "--no-mimetype"],
+        timeout=settings.rclone_preview_timeout,
+        max_items=limit,
     )
-    try:
-        items = json.loads(output or "[]")
-    except json.JSONDecodeError as exc:
-        raise RcloneError("Risposta di rclone non leggibile") from exc
 
-    # Prima le cartelle, poi i file, entrambi in ordine alfabetico: e come lo
-    # mostrerebbe un gestore di file.
+    # Ordinamento sulle voci ricevute, cartelle prima e poi file: e come le
+    # mostrerebbe un gestore di file. Non e un ordinamento globale della cartella,
+    # perche ci si ferma prima di averla letta tutta.
     items.sort(key=lambda i: (not i.get("IsDir"), i.get("Name", "").lower()))
 
     return [
@@ -162,89 +278,44 @@ def _parse_mtime(value: str) -> int:
 
 
 async def list_files(
-    remote: str, on_progress=None, timeout: float = 3600.0
+    remote: str, on_progress=None, timeout: float | None = None
 ) -> list[RemoteFile]:
-    """Elenca ricorsivamente i file di un remote.
+    """Elenca ricorsivamente i file di un remote, riportando l'avanzamento.
 
-    L'uscita di lsjson e un unico array JSON: si legge in streaming riga per riga
-    per poter riportare l'avanzamento su remote con centinaia di migliaia di file,
-    invece di restare muti fino alla fine.
+    Su remote con centinaia di migliaia di file l'elenco dura minuti: leggendo in
+    streaming si puo mostrare quanti file sono gia stati trovati invece di restare
+    muti fino alla fine.
     """
-    target = _normalize(remote)
-    process = await asyncio.create_subprocess_exec(
-        RCLONE,
-        *BASE_ARGS,
-        "lsjson",
-        "-R",
-        "--files-only",
-        "--no-mimetype",
-        target,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        limit=8 * 1024 * 1024,
+    files: list[RemoteFile] = []
+    total = {"bytes": 0}
+
+    def collect(item: dict, _count: int) -> None:
+        if item.get("IsDir"):
+            return
+        size = item.get("Size", 0)
+        if size < 0:
+            return
+        files.append(
+            RemoteFile(
+                path=item["Path"],
+                name=item.get("Name") or os.path.basename(item["Path"]),
+                size=size,
+                mtime_ns=_parse_mtime(item.get("ModTime", "")),
+            )
+        )
+        total["bytes"] += size
+        if on_progress is not None and len(files) % 250 == 0:
+            on_progress(len(files), total["bytes"], os.path.dirname(item["Path"]))
+
+    await _stream_lsjson(
+        _normalize(remote),
+        ["-R", "--files-only", "--no-mimetype"],
+        timeout=timeout if timeout is not None else settings.rclone_list_timeout,
+        on_item=collect,
     )
 
-    files: list[RemoteFile] = []
-    total_bytes = 0
-    buffer: list[str] = []
-
-    async def read_stdout() -> None:
-        nonlocal total_bytes
-        assert process.stdout is not None
-        while True:
-            raw = await process.stdout.readline()
-            if not raw:
-                break
-            line = raw.decode(errors="replace").strip().rstrip(",")
-            if line in ("[", "]", ""):
-                continue
-            buffer.append(line)
-            # lsjson stampa un oggetto per riga: quando la riga chiude un oggetto
-            # completo lo si converte subito.
-            if not line.endswith("}"):
-                continue
-            candidate = "".join(buffer)
-            buffer.clear()
-            try:
-                item = json.loads(candidate)
-            except json.JSONDecodeError:
-                continue
-            if item.get("IsDir"):
-                continue
-            size = item.get("Size", 0)
-            if size < 0:
-                continue
-            files.append(
-                RemoteFile(
-                    path=item["Path"],
-                    name=item.get("Name") or os.path.basename(item["Path"]),
-                    size=size,
-                    mtime_ns=_parse_mtime(item.get("ModTime", "")),
-                )
-            )
-            total_bytes += size
-            if on_progress is not None and len(files) % 250 == 0:
-                on_progress(len(files), total_bytes, os.path.dirname(item["Path"]))
-
-    try:
-        await asyncio.wait_for(read_stdout(), timeout)
-    except TimeoutError:
-        process.kill()
-        await process.wait()
-        raise RcloneError(f"L'elenco di {remote} non e finito entro {timeout:.0f}s") from None
-
-    stderr = b""
-    if process.stderr is not None:
-        stderr = await process.stderr.read()
-    await process.wait()
-
-    if process.returncode != 0:
-        raise RcloneError(
-            stderr.decode(errors="replace").strip()[:500] or f"lsjson di {remote} fallito"
-        )
-
     if on_progress is not None:
-        on_progress(len(files), total_bytes, "")
+        on_progress(len(files), total["bytes"], "")
     return files
 
 
@@ -322,6 +393,7 @@ class RemoteSliceReader:
         # anticipata dopo aver letto tutto quello che serviva.
         if exc_type is None and self._read < self._length and process.returncode not in (0, None):
             raise RcloneError(
-                stderr.decode(errors="replace").strip()[:500]
-                or f"Lettura di {self._remote_file} interrotta a {self._read}/{self._length} byte"
+                _clean_error(stderr)
+                if stderr
+                else f"Lettura di {self._remote_file} interrotta a {self._read}/{self._length} byte"
             )
