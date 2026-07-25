@@ -129,6 +129,21 @@ export interface RcloneStatus {
   error: string | null;
 }
 
+export interface RemoteEntry {
+  name: string;
+  path: string;
+  size: number;
+  is_dir: boolean;
+  mtime: string;
+}
+
+export interface RemotePreview {
+  remote: string;
+  entries: RemoteEntry[];
+  truncated: boolean;
+  error: string | null;
+}
+
 export interface RestoreOut {
   restore_id: string;
   target_path: string;

@@ -99,6 +99,45 @@ async def check_remote(remote: str) -> None:
     await _run(["lsjson", "--max-depth", "1", _normalize(remote)], timeout=60)
 
 
+@dataclass(slots=True)
+class RemoteEntry:
+    name: str
+    path: str
+    size: int
+    is_dir: bool
+    mtime: str
+
+
+async def preview(remote: str, limit: int = 20) -> list[RemoteEntry]:
+    """Primo livello di un remote, per farsi un'idea del contenuto.
+
+    Si ferma alla profondita uno: su un remote con centinaia di migliaia di file
+    un elenco ricorsivo richiederebbe minuti, mentre qui bastano pochi secondi.
+    """
+    output = await _run(
+        ["lsjson", "--max-depth", "1", "--no-mimetype", _normalize(remote)], timeout=120
+    )
+    try:
+        items = json.loads(output or "[]")
+    except json.JSONDecodeError as exc:
+        raise RcloneError("Risposta di rclone non leggibile") from exc
+
+    # Prima le cartelle, poi i file, entrambi in ordine alfabetico: e come lo
+    # mostrerebbe un gestore di file.
+    items.sort(key=lambda i: (not i.get("IsDir"), i.get("Name", "").lower()))
+
+    return [
+        RemoteEntry(
+            name=item.get("Name", ""),
+            path=item.get("Path", ""),
+            size=max(0, item.get("Size", 0)),
+            is_dir=bool(item.get("IsDir")),
+            mtime=item.get("ModTime", "") or "",
+        )
+        for item in items[:limit]
+    ]
+
+
 def _normalize(remote: str) -> str:
     """Accetta sia 'nome:' che 'nome:sottocartella'."""
     remote = remote.strip()

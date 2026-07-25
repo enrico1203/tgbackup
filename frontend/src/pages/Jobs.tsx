@@ -4,6 +4,7 @@ import { Link } from "react-router";
 import {
   CloudUpload,
   FolderOpen,
+  FolderSearch,
   HardDrive,
   Pencil,
   Play,
@@ -16,6 +17,7 @@ import { api } from "../lib/api";
 import { formatBytes, formatDateTime, formatInterval } from "../lib/format";
 import { useProgress } from "../lib/progress";
 import JobActivity, { phaseLabel } from "../components/JobActivity";
+import RemoteBrowser from "../components/RemoteBrowser";
 import type { Account, Channel, Job, RcloneStatus } from "../lib/types";
 import {
   Alert,
@@ -46,6 +48,7 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
   const [sourceType, setSourceType] = useState<"local" | "rclone">(job?.source_type ?? "local");
   const [localPath, setLocalPath] = useState(job?.local_path ?? "");
   const [remote, setRemote] = useState(job?.remote ?? "");
+  const [browsing, setBrowsing] = useState<string | null>(null);
   const [intervalHours, setIntervalHours] = useState(String(job?.interval_hours ?? 24));
   const [scanRate, setScanRate] = useState(String(job?.scan_files_per_sec ?? 0));
   const [partSize, setPartSize] = useState(
@@ -106,6 +109,7 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
     Number(intervalHours) > 0 && Number(partSize) > 0;
 
   return (
+    <>
     <Modal
       title={job ? `Modifica ${job.name}` : "Nuovo sync job"}
       onClose={onClose}
@@ -217,7 +221,7 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
         >
           <div className="row" style={{ gap: 8 }}>
             <select
-              style={{ width: 190 }}
+              style={{ width: 180 }}
               value={(rcloneStatus?.remotes ?? []).find((r) => remote.startsWith(r)) ?? ""}
               onChange={(e) => setRemote(e.target.value)}
             >
@@ -236,6 +240,16 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
               placeholder="miocloud-crypt:Film"
               className="mono"
             />
+            <button
+              type="button"
+              className="btn ghost small"
+              disabled={!remote.includes(":")}
+              onClick={() => setBrowsing(remote)}
+              title="Sfoglia il contenuto e scegli una sottocartella"
+            >
+              <FolderSearch size={13} />
+              Sfoglia
+            </button>
           </div>
         </Field>
       )}
@@ -281,6 +295,18 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
         <span>Esegui automaticamente secondo l'intervallo</span>
       </label>
     </Modal>
+
+    {browsing ? (
+      <RemoteBrowser
+        remote={browsing}
+        onClose={() => setBrowsing(null)}
+        onPick={(path) => {
+          setRemote(path);
+          setBrowsing(null);
+        }}
+      />
+    ) : null}
+    </>
   );
 }
 

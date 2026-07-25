@@ -230,6 +230,21 @@ class RemoteCheckOut(BaseModel):
     error: str | None
 
 
+class RemoteEntryOut(BaseModel):
+    name: str
+    path: str
+    size: int
+    is_dir: bool
+    mtime: str
+
+
+class RemotePreviewOut(BaseModel):
+    remote: str
+    entries: list[RemoteEntryOut]
+    truncated: bool
+    error: str | None = None
+
+
 # Dashboard
 
 

@@ -5,6 +5,7 @@ import { CheckCircle2, HardDrive, Trash2 } from "lucide-react";
 import { api } from "../lib/api";
 import { formatDateTime } from "../lib/format";
 import type { RcloneStatus } from "../lib/types";
+import RemoteBrowser from "../components/RemoteBrowser";
 import { Alert, Card, CardHead, Field, Pill, Spinner } from "../components/ui";
 
 const PLACEHOLDER = `[miocloud]
@@ -21,6 +22,7 @@ export default function Settings() {
   const queryClient = useQueryClient();
   const [content, setContent] = useState("");
   const [editing, setEditing] = useState(false);
+  const [browsing, setBrowsing] = useState<string | null>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ["rclone"],
@@ -89,13 +91,20 @@ export default function Settings() {
 
               {data?.configured && data.remotes.length > 0 ? (
                 <div>
-                  <span className="section-label">Remote disponibili</span>
+                  <span className="section-label">
+                    Remote disponibili, premi per vedere cosa contengono
+                  </span>
                   <div className="row wrap" style={{ gap: 8, marginTop: 8 }}>
                     {data.remotes.map((remote) => (
-                      <span key={remote} className="pill mono">
+                      <button
+                        key={remote}
+                        type="button"
+                        className="pill mono remote-pill"
+                        onClick={() => setBrowsing(remote)}
+                      >
                         <HardDrive size={11} />
                         {remote}
-                      </span>
+                      </button>
                     ))}
                   </div>
                 </div>
@@ -172,6 +181,10 @@ export default function Settings() {
           )}
         </div>
       </Card>
+
+      {browsing ? (
+        <RemoteBrowser remote={browsing} onClose={() => setBrowsing(null)} />
+      ) : null}
     </>
   );
 }

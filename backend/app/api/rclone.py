@@ -1,10 +1,18 @@
+from dataclasses import asdict
+
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select
 
 from ..deps import ActiveUserDep, SessionDep
 from ..models import Setting, utcnow
 from ..rclone import client as rclone
-from ..schemas import RcloneConfigIn, RcloneStatusOut, RemoteCheckOut
+from ..schemas import (
+    RcloneConfigIn,
+    RcloneStatusOut,
+    RemoteCheckOut,
+    RemoteEntryOut,
+    RemotePreviewOut,
+)
 from ..security import decrypt, encrypt
 
 router = APIRouter(prefix="/api/rclone", tags=["rclone"])
@@ -113,3 +121,22 @@ async def check_remote(remote: str, _: ActiveUserDep) -> RemoteCheckOut:
     except rclone.RcloneError as exc:
         return RemoteCheckOut(ok=False, error=str(exc))
     return RemoteCheckOut(ok=True, error=None)
+
+
+@router.get("/preview", response_model=RemotePreviewOut)
+async def preview_remote(
+    remote: str, _: ActiveUserDep, limit: int = 20
+) -> RemotePreviewOut:
+    limit = max(1, min(limit, 200))
+    try:
+        # Si chiede una voce in piu del necessario per sapere se ce n'erano altre.
+        entries = await rclone.preview(remote, limit + 1)
+    except rclone.RcloneError as exc:
+        return RemotePreviewOut(remote=remote, entries=[], truncated=False, error=str(exc))
+
+    return RemotePreviewOut(
+        remote=remote,
+        # Le dataclass con slots non hanno __dict__, quindi niente vars().
+        entries=[RemoteEntryOut(**asdict(e)) for e in entries[:limit]],
+        truncated=len(entries) > limit,
+    )

@@ -687,6 +687,118 @@ input::placeholder {
   background: color-mix(in srgb, var(--accent) 24%, transparent);
 }
 
+button.remote-pill {
+  border: 0;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  transition: background 0.12s ease;
+}
+
+button.remote-pill:hover {
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
+/* Esplorazione di un remote */
+
+.path-bar {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-control);
+  background: var(--elevated);
+}
+
+.path-bar input {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  flex: 1;
+  min-width: 0;
+}
+
+.path-bar input:focus {
+  outline: none;
+}
+
+.crumb {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+
+.crumb:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+.crumb:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.crumb:not(:last-child)::after {
+  content: " /";
+  color: var(--muted);
+}
+
+.browser {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-control);
+  overflow: hidden;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.browser-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--hairline);
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.browser-row.static {
+  cursor: default;
+}
+
+.browser-row:last-child {
+  border-bottom: 0;
+}
+
+.browser-row:hover:not(.static) {
+  background: var(--accent-soft);
+}
+
+.browser-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-size {
+  color: var(--muted);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
 /* Tabelle */
 
 .table-wrap {
