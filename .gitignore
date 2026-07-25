@@ -1,9 +1,12 @@
 # Ambiente / segreti
 .env
 .env.*
+!.env.example
 *.local
-config.local.*
 secrets/
+
+# Dati applicativi: database SQLite, sessioni Telegram, file ricostruiti
+data/
 
 # Dipendenze
 node_modules/

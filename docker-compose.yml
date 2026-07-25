@@ -1,0 +1,39 @@
+services:
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      APP_SECRET: ${APP_SECRET}
+      TZ: ${TZ:-Europe/Rome}
+      DATA_DIR: /data
+    volumes:
+      # Database SQLite e file ricostruiti dal restore
+      - ./data:/data
+      # Cartelle da salvare su Telegram, sempre in sola lettura.
+      # Aggiungine altre qui sotto con la stessa forma, poi: docker compose up -d backend
+      - /mnt/documenti:/mnt/documenti:ro
+    networks:
+      - tgbackup
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-8080}:80"
+    networks:
+      - tgbackup
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    depends_on:
+      - frontend
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    networks:
+      - tgbackup
+
+networks:
+  tgbackup:
+    driver: bridge
