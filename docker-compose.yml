@@ -12,6 +12,7 @@ services:
       # Cartelle da salvare su Telegram, sempre in sola lettura.
       # Aggiungine altre qui sotto con la stessa forma, poi: docker compose up -d backend
       - /mnt/documenti:/mnt/documenti:ro
+      - /mnt/jotta2:/mnt/jotta2:ro
     networks:
       - tgbackup
 

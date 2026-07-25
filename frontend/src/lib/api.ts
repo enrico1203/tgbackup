@@ -21,6 +21,8 @@ export class ApiError extends Error {
   }
 }
 
+const LOGIN_PATH = "/api/auth/login";
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const token = getToken();
   const headers = new Headers(init.headers);
@@ -29,7 +31,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   const response = await fetch(path, { ...init, headers });
 
-  if (response.status === 401) {
+  // Un 401 sul login significa credenziali sbagliate, non sessione scaduta: va
+  // mostrato il messaggio del backend, non ricaricata la pagina.
+  if (response.status === 401 && path !== LOGIN_PATH) {
     clearToken();
     window.location.reload();
     throw new ApiError(401, "Sessione scaduta");
