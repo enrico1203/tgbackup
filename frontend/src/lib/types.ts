@@ -143,6 +143,10 @@ export interface JobProgress {
   current_file: string | null;
   current_part: number;
   current_parts: number;
+  scanned_files: number;
+  scanned_dirs: number;
+  scanned_bytes: number;
+  scanned_where: string | null;
   files_total: number;
   files_done: number;
   files_remaining: number;

@@ -1,13 +1,21 @@
-import { Fragment, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
-import { Download, FileStack, Search } from "lucide-react";
+import { Download, FileStack, Hash, Search } from "lucide-react";
 
 import { api } from "../lib/api";
-import { formatBytes, formatDateTime, formatDuration, formatSpeed } from "../lib/format";
+import { formatBytes, formatDateTime, formatDuration, formatSpeed, percent } from "../lib/format";
 import { useProgress } from "../lib/progress";
 import type { FileEntry, FilePage, Job, RestoreOut } from "../lib/types";
-import { Alert, Card, CardHead, Empty, Pill, ProgressBar, Spinner } from "../components/ui";
+import {
+  Alert,
+  Card,
+  CardHead,
+  Empty,
+  Pill,
+  ProgressBar,
+  Spinner,
+} from "../components/ui";
 
 const PAGE_SIZE = 100;
 
@@ -19,6 +27,49 @@ const STATE_LABELS: Record<string, { text: string; tone: "ok" | "warn" | "bad" |
   to_delete: { text: "Da cancellare", tone: "mute" },
   error: { text: "Errore", tone: "bad" },
 };
+
+interface ChannelGroup {
+  channelId: number;
+  title: string;
+  accounts: string[];
+  jobNames: string[];
+  filesTotal: number;
+  filesUploaded: number;
+  filesError: number;
+  bytesTotal: number;
+  bytesUploaded: number;
+}
+
+/** I file appartengono a un job, e ogni job scrive su un canale. Per mostrarli per
+ *  canale si raggruppano i job che condividono la stessa destinazione. */
+function groupByChannel(jobs: Job[]): ChannelGroup[] {
+  const groups = new Map<number, ChannelGroup>();
+  for (const job of jobs) {
+    let group = groups.get(job.channel_id);
+    if (!group) {
+      group = {
+        channelId: job.channel_id,
+        title: job.channel_title,
+        accounts: [],
+        jobNames: [],
+        filesTotal: 0,
+        filesUploaded: 0,
+        filesError: 0,
+        bytesTotal: 0,
+        bytesUploaded: 0,
+      };
+      groups.set(job.channel_id, group);
+    }
+    if (!group.accounts.includes(job.account_label)) group.accounts.push(job.account_label);
+    group.jobNames.push(job.name);
+    group.filesTotal += job.stats.files_total;
+    group.filesUploaded += job.stats.files_uploaded;
+    group.filesError += job.stats.files_error;
+    group.bytesTotal += job.stats.bytes_total;
+    group.bytesUploaded += job.stats.bytes_uploaded;
+  }
+  return Array.from(groups.values()).sort((a, b) => a.title.localeCompare(b.title));
+}
 
 function RestorePanel() {
   const { restores } = useProgress();
@@ -63,19 +114,87 @@ function RestorePanel() {
   );
 }
 
+function ChannelPicker({
+  groups,
+  selected,
+  onSelect,
+}: {
+  groups: ChannelGroup[];
+  selected: number | null;
+  onSelect: (channelId: number) => void;
+}) {
+  return (
+    <div className="channel-grid">
+      {groups.map((group) => {
+        const done = percent(group.filesUploaded, group.filesTotal);
+        return (
+          <button
+            key={group.channelId}
+            type="button"
+            className={group.channelId === selected ? "channel-card active" : "channel-card"}
+            onClick={() => onSelect(group.channelId)}
+          >
+            <div className="row" style={{ gap: 9 }}>
+              <Hash size={15} style={{ flexShrink: 0, opacity: 0.65 }} />
+              <span className="channel-title">{group.title}</span>
+              {group.filesError > 0 ? (
+                <span style={{ marginLeft: "auto" }}>
+                  <Pill tone="bad">{group.filesError}</Pill>
+                </span>
+              ) : null}
+            </div>
+
+            <div className="channel-meta num">
+              {group.filesUploaded.toLocaleString("it-IT")} di{" "}
+              {group.filesTotal.toLocaleString("it-IT")} file, {formatBytes(group.bytesUploaded)}
+            </div>
+
+            <ProgressBar done={group.filesUploaded} total={group.filesTotal} />
+
+            <div className="channel-meta">
+              {group.jobNames.join(", ")} su {group.accounts.join(", ")}
+              <span className="num"> — {done.toFixed(done >= 99.5 ? 1 : 0)} per cento</span>
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function Files() {
   const [params, setParams] = useSearchParams();
-  const jobParam = params.get("job");
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
   const [state, setState] = useState("");
   const [page, setPage] = useState(0);
   const [expanded, setExpanded] = useState<number | null>(null);
 
-  const { data: jobs } = useQuery({ queryKey: ["jobs"], queryFn: () => api.get<Job[]>("/api/jobs") });
+  const { data: jobs } = useQuery({
+    queryKey: ["jobs"],
+    queryFn: () => api.get<Job[]>("/api/jobs"),
+    refetchInterval: 15000,
+  });
+
+  const groups = useMemo(() => groupByChannel(jobs ?? []), [jobs]);
+
+  // Il canale scelto vive nella query string, cosi il link resta condivisibile.
+  const fromUrl = params.get("channel");
+  const selected =
+    fromUrl !== null && groups.some((g) => g.channelId === Number(fromUrl))
+      ? Number(fromUrl)
+      : (groups[0]?.channelId ?? null);
+
+  const selectChannel = (channelId: number) => {
+    const next = new URLSearchParams(params);
+    next.set("channel", String(channelId));
+    setParams(next);
+    setPage(0);
+    setExpanded(null);
+  };
 
   const filters = new URLSearchParams();
-  if (jobParam) filters.set("job_id", jobParam);
+  if (selected !== null) filters.set("channel_id", String(selected));
   if (state) filters.set("state", state);
   if (query) filters.set("search", query);
   filters.set("offset", String(page * PAGE_SIZE));
@@ -84,6 +203,7 @@ export default function Files() {
   const { data, isLoading } = useQuery({
     queryKey: ["files", filters.toString()],
     queryFn: () => api.get<FilePage>(`/api/files?${filters.toString()}`),
+    enabled: selected !== null,
     refetchInterval: 15000,
   });
 
@@ -91,15 +211,39 @@ export default function Files() {
     mutationFn: (fileId: number) => api.post<RestoreOut>("/api/files/restore", { file_id: fileId }),
   });
 
+  const current = groups.find((group) => group.channelId === selected);
   const total = data?.total ?? 0;
   const pages = Math.ceil(total / PAGE_SIZE);
+
+  if (groups.length === 0) {
+    return (
+      <Card>
+        <Empty
+          icon={<FileStack size={26} color="var(--muted)" />}
+          title="Nessun canale con file"
+          hint="I canali compaiono qui quando un sync job li usa come destinazione."
+        />
+      </Card>
+    );
+  }
 
   return (
     <>
       <RestorePanel />
 
+      <div>
+        <span className="section-label">Canali di destinazione</span>
+        <div style={{ marginTop: 10 }}>
+          <ChannelPicker groups={groups} selected={selected} onSelect={selectChannel} />
+        </div>
+      </div>
+
       <Card>
-        <CardHead title={`File tracciati (${total.toLocaleString("it-IT")})`} />
+        <CardHead title={current ? current.title : "File"}>
+          <span className="num" style={{ color: "var(--muted)", fontSize: 12.5 }}>
+            {total.toLocaleString("it-IT")} file
+          </span>
+        </CardHead>
 
         <div className="card-body">
           <div className="row wrap">
@@ -107,7 +251,7 @@ export default function Files() {
               <Search size={16} color="var(--muted)" />
               <input
                 value={search}
-                placeholder="Cerca per percorso o nome"
+                placeholder="Cerca per percorso o nome in questo canale"
                 onChange={(event) => setSearch(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
@@ -117,25 +261,6 @@ export default function Files() {
                 }}
               />
             </div>
-
-            <select
-              style={{ width: 200 }}
-              value={jobParam ?? ""}
-              onChange={(event) => {
-                const next = new URLSearchParams(params);
-                if (event.target.value) next.set("job", event.target.value);
-                else next.delete("job");
-                setParams(next);
-                setPage(0);
-              }}
-            >
-              <option value="">Tutti i job</option>
-              {(jobs ?? []).map((job) => (
-                <option key={job.id} value={job.id}>
-                  {job.name}
-                </option>
-              ))}
-            </select>
 
             <select
               style={{ width: 180 }}
@@ -179,8 +304,8 @@ export default function Files() {
         ) : !data || data.items.length === 0 ? (
           <Empty
             icon={<FileStack size={26} color="var(--muted)" />}
-            title="Nessun file"
-            hint="I file compaiono qui dopo la prima scansione di un sync job."
+            title="Nessun file in questo canale"
+            hint="I file compaiono dopo la prima scansione del sync job che scrive qui."
           />
         ) : (
           <div className="table-wrap">
@@ -197,7 +322,10 @@ export default function Files() {
               </thead>
               <tbody>
                 {data.items.map((entry: FileEntry) => {
-                  const label = STATE_LABELS[entry.state] ?? { text: entry.state, tone: "mute" as const };
+                  const label = STATE_LABELS[entry.state] ?? {
+                    text: entry.state,
+                    tone: "mute" as const,
+                  };
                   return (
                     <Fragment key={entry.id}>
                       <tr
@@ -205,7 +333,12 @@ export default function Files() {
                         onClick={() => setExpanded(expanded === entry.id ? null : entry.id)}
                       >
                         <td>
-                          <div className="mono truncate">{entry.rel_path}</div>
+                          <div className="truncate" style={{ fontWeight: 500 }}>
+                            {entry.name}
+                          </div>
+                          <div className="mono truncate" style={{ color: "var(--muted)" }}>
+                            {entry.rel_path}
+                          </div>
                           {entry.error ? (
                             <div style={{ color: "var(--danger)", fontSize: 12 }}>{entry.error}</div>
                           ) : null}

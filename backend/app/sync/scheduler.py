@@ -17,7 +17,7 @@ from sqlalchemy import select, update
 from ..config import settings
 from ..db import SessionLocal
 from ..models import JobRun, SyncJob
-from .runner import execute_job
+from .runner import StopSignal, execute_job
 
 log = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 class Scheduler:
     def __init__(self) -> None:
         self._tasks: dict[int, asyncio.Task] = {}
-        self._cancels: dict[int, asyncio.Event] = {}
+        self._cancels: dict[int, StopSignal] = {}
         self._loop_task: asyncio.Task | None = None
 
     async def reset_stale(self) -> None:
@@ -62,7 +62,7 @@ class Scheduler:
         return True
 
     def _spawn(self, job_id: int) -> None:
-        cancel = asyncio.Event()
+        cancel = StopSignal()
         self._cancels[job_id] = cancel
 
         async def wrapper() -> None:
@@ -78,7 +78,7 @@ class Scheduler:
         cancel = self._cancels.get(job_id)
         if cancel is None:
             return False
-        cancel.set()
+        cancel.set("user")
         return True
 
     async def _tick(self) -> None:
@@ -122,7 +122,9 @@ class Scheduler:
             self._loop_task = None
 
         for cancel in self._cancels.values():
-            cancel.set()
+            # Motivo esplicito: cosi i job fermati dallo spegnimento non si spostano
+            # avanti di un intervallo intero e al riavvio riprendono subito.
+            cancel.set("shutdown")
         tasks = list(self._tasks.values())
         if tasks:
             # I job in corso vengono avvisati e si fermano al prossimo punto di controllo.

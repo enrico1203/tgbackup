@@ -46,7 +46,7 @@ async def restore_file(file_id: int) -> str:
         name = entry.name
         size = entry.size
         account_id = job.account_id
-        channel_tg_id = channel.tg_id
+        peer = manager.input_peer(channel)
 
     if not parts:
         raise ValueError("Nessuna parte registrata per questo file")
@@ -62,7 +62,7 @@ async def restore_file(file_id: int) -> str:
     hub.start_restore(progress)
 
     asyncio.create_task(
-        _run_restore(progress, account_id, channel_tg_id, parts, target),
+        _run_restore(progress, account_id, peer, parts, target),
         name=f"restore-{restore_id}",
     )
     return restore_id
@@ -71,13 +71,12 @@ async def restore_file(file_id: int) -> str:
 async def _run_restore(
     progress: RestoreProgress,
     account_id: int,
-    channel_tg_id: int,
+    entity,
     parts: list[tuple[int, int, int, int]],
     target,
 ) -> None:
     try:
         client = await manager.get_client(account_id)
-        entity = await client.get_entity(channel_tg_id)
 
         await asyncio.to_thread(os.makedirs, target.parent, 0o755, True)
         fd = await asyncio.to_thread(os.open, str(target), os.O_WRONLY | os.O_CREAT | os.O_TRUNC)

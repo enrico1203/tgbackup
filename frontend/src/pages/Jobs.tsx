@@ -4,14 +4,9 @@ import { Link } from "react-router";
 import { CloudUpload, Pencil, Play, Plus, Square, Trash2 } from "lucide-react";
 
 import { api } from "../lib/api";
-import {
-  formatBytes,
-  formatDateTime,
-  formatDuration,
-  formatInterval,
-  formatSpeed,
-} from "../lib/format";
+import { formatBytes, formatDateTime, formatInterval } from "../lib/format";
 import { useProgress } from "../lib/progress";
+import JobActivity, { phaseLabel } from "../components/JobActivity";
 import type { Account, Channel, Job } from "../lib/types";
 import {
   Alert,
@@ -231,11 +226,7 @@ function JobCard({ job, onEdit }: { job: Job; onEdit: (job: Job) => void }) {
         <div className="row" style={{ gap: 8 }}>
           {running ? (
             <Pill tone="ok" live>
-              {progress?.phase === "scan"
-                ? "Scansione"
-                : progress?.phase === "delete"
-                  ? "Pulizia"
-                  : "Upload"}
+              {phaseLabel(progress?.phase ?? job.phase ?? "")}
             </Pill>
           ) : failed ? (
             <Pill tone="bad">Errore</Pill>
@@ -291,27 +282,7 @@ function JobCard({ job, onEdit }: { job: Job; onEdit: (job: Job) => void }) {
         </div>
 
         {running && progress ? (
-          <>
-            <div className="mono truncate" style={{ color: "var(--muted)" }}>
-              {progress.current_file ?? "preparazione"}
-              {progress.current_parts > 1
-                ? ` (parte ${progress.current_part} di ${progress.current_parts})`
-                : ""}
-            </div>
-            <ProgressBar done={progress.bytes_done} total={progress.bytes_total} />
-            <div className="row wrap num" style={{ gap: 20, fontSize: 12.5 }}>
-              <strong>{formatSpeed(progress.speed_bps)}</strong>
-              <span style={{ color: "var(--muted)" }}>
-                {formatBytes(progress.bytes_done)} di {formatBytes(progress.bytes_total)}
-              </span>
-              <span style={{ color: "var(--muted)" }}>
-                {progress.files_remaining.toLocaleString("it-IT")} file mancanti
-              </span>
-              <span style={{ color: "var(--muted)" }}>
-                stimato {formatDuration(progress.eta_seconds)}
-              </span>
-            </div>
-          </>
+          <JobActivity progress={progress} />
         ) : (
           <>
             <ProgressBar done={job.stats.bytes_uploaded} total={job.stats.bytes_total} />

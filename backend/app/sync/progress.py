@@ -35,6 +35,13 @@ class JobProgress:
     bytes_total: int = 0
     bytes_done: int = 0
 
+    # Avanzamento della scansione. Su un mount di rete la camminata dura a lungo e
+    # senza questi contatori la dashboard resterebbe ferma su "in preparazione".
+    scanned_files: int = 0
+    scanned_dirs: int = 0
+    scanned_bytes: int = 0
+    scanned_where: str | None = None
+
     started_at: float = field(default_factory=time.monotonic)
     speed_bps: float = 0.0
 
@@ -78,6 +85,10 @@ class JobProgress:
             "current_file": self.current_file,
             "current_part": self.current_part,
             "current_parts": self.current_parts,
+            "scanned_files": self.scanned_files,
+            "scanned_dirs": self.scanned_dirs,
+            "scanned_bytes": self.scanned_bytes,
+            "scanned_where": self.scanned_where,
             "files_total": self.files_total,
             "files_done": self.files_done,
             "files_remaining": self.files_remaining,

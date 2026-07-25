@@ -39,18 +39,23 @@ def part_plan(size: int, part_size: int) -> list[tuple[int, int]]:
     ]
 
 
-def build_caption(rel_path: str, name: str, index: int, total: int, size: int, mtime_ns: int) -> str:
-    when = datetime.fromtimestamp(mtime_ns / 1_000_000_000, tz=timezone.utc)
-    lines = [
-        rel_path,
-        name,
-        f"part {index + 1}/{total}",
-        f"size {size}",
-        f"mtime {when.isoformat()}",
-    ]
-    caption = "\n".join(lines)
+def build_caption(rel_path: str, name: str, index: int, total: int) -> str:
+    """Didascalia del messaggio.
+
+    Formato fissato dall'utente:
+
+        FileName: <nome del file>
+        Path: <cartella che lo contiene, relativa alla radice del job>
+
+    La riga Part compare solo sui file spezzati, dove serve a ricomporre l'ordine.
+    Dimensione e mtime non stanno nella didascalia: sono nel database.
+    """
+    folder = os.path.dirname(rel_path)
+    lines = [f"FileName: {name}", f"Path: {folder}"]
+    if total > 1:
+        lines.append(f"Part: {index + 1}/{total}")
     # Il limite del testo di un messaggio e 1024 caratteri con media allegato.
-    return caption[:1024]
+    return "\n".join(lines)[:1024]
 
 
 def part_file_name(name: str, index: int, total: int) -> str:
@@ -64,8 +69,29 @@ class JobCancelled(Exception):
     pass
 
 
+class StopSignal:
+    """Richiesta di fermare un job, con il motivo.
+
+    Il motivo conta: se il job si ferma perche il processo si sta spegnendo, la corsa
+    successiva non va rimandata di un intervallo intero, altrimenti ogni riavvio del
+    container sposterebbe il backup di ore. Se invece a fermarlo e stato l'utente,
+    l'intervallo normale va rispettato.
+    """
+
+    def __init__(self) -> None:
+        self._event = asyncio.Event()
+        self.reason = "user"
+
+    def set(self, reason: str = "user") -> None:
+        self.reason = reason
+        self._event.set()
+
+    def is_set(self) -> bool:
+        return self._event.is_set()
+
+
 class JobRunner:
-    def __init__(self, job_id: int, cancel: asyncio.Event) -> None:
+    def __init__(self, job_id: int, cancel: StopSignal) -> None:
         self.job_id = job_id
         self.cancel = cancel
 
@@ -95,19 +121,20 @@ class JobRunner:
             files_per_sec = job.scan_files_per_sec
             part_size = job.part_size_bytes
             account_id = job.account_id
-            channel_tg_id = channel.tg_id
+            peer = manager.input_peer(channel)
 
         progress = hub.start_job(self.job_id, job_name)
         progress.phase = "scan"
 
         try:
             client = await manager.get_client(account_id)
-            entity = await client.get_entity(channel_tg_id)
+            entity = peer
 
-            counters = await self._diff(local_path, files_per_sec, run_id)
+            counters = await self._diff(local_path, files_per_sec, run_id, progress)
             self._check_cancel()
 
             progress.phase = "delete"
+            progress.scanned_where = None
             await self._set_phase("delete")
             removed = await self._apply_deletions(client, entity)
 
@@ -149,9 +176,22 @@ class JobRunner:
 
     # Scansione e confronto
 
-    async def _diff(self, local_path: str, files_per_sec: int, run_id: int) -> dict:
-        found = await scan(local_path, files_per_sec)
+    async def _diff(
+        self, local_path: str, files_per_sec: int, run_id: int, progress
+    ) -> dict:
+        def report(files: int, dirs: int, total_bytes: int, where: str) -> None:
+            progress.scanned_files = files
+            progress.scanned_dirs = dirs
+            progress.scanned_bytes = total_bytes
+            progress.scanned_where = where or None
+
+        found = await scan(local_path, files_per_sec, on_progress=report)
         self._check_cancel()
+
+        progress.phase = "diff"
+        progress.scanned_where = None
+        await self._set_phase("diff")
+
         on_disk = {item.rel_path: item for item in found}
 
         added = 0
@@ -307,7 +347,7 @@ class JobRunner:
 
             try:
                 sent = await self._upload_one(
-                    client, entity, absolute, rel_path, name, size, mtime_ns, part_size,
+                    client, entity, absolute, rel_path, name, size, part_size,
                     progress, file_id
                 )
             except JobCancelled:
@@ -359,7 +399,6 @@ class JobRunner:
         rel_path: str,
         name: str,
         size: int,
-        mtime_ns: int,
         part_size: int,
         progress,
         file_id: int,
@@ -382,7 +421,7 @@ class JobRunner:
                 client, absolute, offset, length, file_name, progress
             )
 
-            caption = build_caption(rel_path, name, index, len(slices), size, mtime_ns)
+            caption = build_caption(rel_path, name, index, len(slices))
             message = await client.send_file(
                 entity,
                 handle,
@@ -437,7 +476,7 @@ class JobRunner:
                 await asyncio.sleep(5 * attempt)
 
 
-async def execute_job(job_id: int, cancel: asyncio.Event) -> None:
+async def execute_job(job_id: int, cancel: StopSignal) -> None:
     """Esegue un job e riprogramma la corsa successiva a partire dalla fine."""
     runner = JobRunner(job_id, cancel)
     async with SessionLocal() as session:
@@ -448,11 +487,17 @@ async def execute_job(job_id: int, cancel: asyncio.Event) -> None:
 
     status = "idle"
     error: str | None = None
+    interrupted_by_shutdown = False
     try:
         async with lock:
             await runner.run()
     except JobCancelled:
-        log.info("Job %d interrotto", job_id)
+        interrupted_by_shutdown = cancel.reason == "shutdown"
+        log.info(
+            "Job %d interrotto (%s)",
+            job_id,
+            "spegnimento" if interrupted_by_shutdown else "richiesta dell'utente",
+        )
     except Exception as exc:
         log.exception("Job %d fallito", job_id)
         status = "error"
@@ -465,7 +510,12 @@ async def execute_job(job_id: int, cancel: asyncio.Event) -> None:
             job.phase = None
             job.last_error = error
             job.last_finished_at = utcnow()
-            # L'intervallo parte dalla fine: un job che dura tre giorni non accumula
-            # esecuzioni arretrate da recuperare tutte insieme.
-            job.next_run_at = datetime.now(timezone.utc) + timedelta(hours=job.interval_hours)
+            if not interrupted_by_shutdown:
+                # L'intervallo parte dalla fine: un job che dura tre giorni non accumula
+                # esecuzioni arretrate da recuperare tutte insieme.
+                job.next_run_at = datetime.now(timezone.utc) + timedelta(
+                    hours=job.interval_hours
+                )
+            # Se a fermarlo e stato lo spegnimento, next_run_at resta com'era: al
+            # riavvio il job riprende subito invece di saltare un intervallo intero.
             await session.commit()

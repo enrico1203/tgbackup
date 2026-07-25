@@ -3,7 +3,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from ..deps import ActiveUserDep, SessionDep
-from ..models import FileEntry
+from ..models import FileEntry, SyncJob
 from ..schemas import FileOut, FilePage, RestoreIn, RestoreOut
 from ..sync.restore import restore_file
 
@@ -15,6 +15,7 @@ async def list_files(
     session: SessionDep,
     _: ActiveUserDep,
     job_id: int | None = None,
+    channel_id: int | None = None,
     state: str | None = None,
     search: str | None = None,
     offset: int = 0,
@@ -23,6 +24,13 @@ async def list_files(
     filters = []
     if job_id is not None:
         filters.append(FileEntry.job_id == job_id)
+    if channel_id is not None:
+        # Un canale puo essere la destinazione di piu job: si filtra passando per loro.
+        filters.append(
+            FileEntry.job_id.in_(
+                select(SyncJob.id).where(SyncJob.channel_id == channel_id)
+            )
+        )
     if state:
         filters.append(FileEntry.state == state)
     if search:

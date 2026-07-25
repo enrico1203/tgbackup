@@ -25,6 +25,7 @@ from telethon.errors import (
 from telethon.sessions import StringSession
 from telethon.tl.types import Channel as TLChannel
 from telethon.tl.types import Chat as TLChat
+from telethon.tl.types import InputPeerChannel, InputPeerChat
 
 from ..config import settings
 from ..db import SessionLocal
@@ -257,6 +258,25 @@ class TelegramManager:
                 pass
 
     # Canali
+
+    @staticmethod
+    def input_peer(channel) -> InputPeerChannel | InputPeerChat:
+        """Costruisce il peer dai dati salvati, senza risolverlo su Telegram.
+
+        Non si passa mai l'id numerico nudo a get_entity: un intero positivo e
+        ambiguo e Telethon lo interpreta come utente. Inoltre StringSession non
+        conserva la cache delle entita, quindi dopo ogni riavvio la risoluzione per
+        id fallirebbe. Con id e access_hash salvati il peer si costruisce a mano, non
+        serve rete e funziona sempre.
+        """
+        if channel.kind == "group":
+            return InputPeerChat(chat_id=channel.tg_id)
+        if channel.access_hash is None:
+            raise TelegramError(
+                f"Il canale {channel.title} non ha access_hash salvato: "
+                "aggiorna l'elenco dei canali dell'account"
+            )
+        return InputPeerChannel(channel_id=channel.tg_id, access_hash=channel.access_hash)
 
     async def list_channels(self, account_id: int) -> list[dict]:
         client = await self.get_client(account_id)

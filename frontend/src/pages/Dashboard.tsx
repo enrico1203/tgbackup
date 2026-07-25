@@ -3,10 +3,11 @@ import { Link } from "react-router";
 import { Activity, CloudUpload, HardDrive, Users } from "lucide-react";
 
 import { api } from "../lib/api";
-import { formatBytes, formatDateTime, formatDuration, formatSpeed, percent } from "../lib/format";
+import { formatBytes, formatDateTime, formatSpeed, percent } from "../lib/format";
 import { useProgress } from "../lib/progress";
 import type { Dashboard as DashboardData } from "../lib/types";
-import { Card, CardHead, Empty, Pill, ProgressBar, Sparkline, Stat } from "../components/ui";
+import JobActivity, { phaseLabel } from "../components/JobActivity";
+import { Card, CardHead, Empty, Pill, Sparkline, Stat } from "../components/ui";
 
 export default function Dashboard() {
   const { jobs, history } = useProgress();
@@ -65,43 +66,18 @@ export default function Dashboard() {
               <div key={job.job_id} style={{ display: "grid", gap: 10 }}>
                 <div className="row" style={{ justifyContent: "space-between" }}>
                   <div style={{ minWidth: 0 }}>
-                    <Link to={`/jobs/${job.job_id}`} style={{ fontWeight: 600, color: "var(--text)" }}>
-                      {job.name}
-                    </Link>
-                    <div className="mono truncate" style={{ color: "var(--muted)" }}>
-                      {job.current_file ?? "preparazione"}
-                      {job.current_parts > 1
-                        ? ` (parte ${job.current_part} di ${job.current_parts})`
-                        : ""}
-                    </div>
+                    <span style={{ fontWeight: 600 }}>{job.name}</span>
                   </div>
                   <Pill tone={job.phase === "upload" ? "ok" : "warn"} live>
-                    {job.phase === "scan"
-                      ? "Scansione"
-                      : job.phase === "delete"
-                        ? "Pulizia"
-                        : "Upload"}
+                    {phaseLabel(job.phase)}
                   </Pill>
                 </div>
 
-                <ProgressBar done={job.bytes_done} total={job.bytes_total} />
+                <JobActivity progress={job} />
 
-                <div className="row wrap num" style={{ gap: 20, fontSize: 12.5 }}>
-                  <span>
-                    <strong>{formatSpeed(job.speed_bps)}</strong>
-                  </span>
-                  <span style={{ color: "var(--muted)" }}>
-                    {formatBytes(job.bytes_done)} di {formatBytes(job.bytes_total)}
-                  </span>
-                  <span style={{ color: "var(--muted)" }}>
-                    {job.files_remaining.toLocaleString("it-IT")} file mancanti
-                  </span>
-                  <span style={{ color: "var(--muted)" }}>
-                    stimato {formatDuration(job.eta_seconds)}
-                  </span>
-                </div>
-
-                <Sparkline values={history.get(job.job_id) ?? []} />
+                {job.phase === "upload" ? (
+                  <Sparkline values={history.get(job.job_id) ?? []} />
+                ) : null}
               </div>
             ))}
           </div>
