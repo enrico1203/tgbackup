@@ -1,7 +1,7 @@
 import { Fragment, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
-import { Download, FileStack, Hash, Search } from "lucide-react";
+import { Download, ExternalLink, FileStack, Hash, Search } from "lucide-react";
 
 import { api } from "../lib/api";
 import { formatBytes, formatDateTime, formatDuration, formatSpeed, percent } from "../lib/format";
@@ -28,8 +28,15 @@ const STATE_LABELS: Record<string, { text: string; tone: "ok" | "warn" | "bad" |
   error: { text: "Errore", tone: "bad" },
 };
 
+/** Un messaggio in un canale privato si apre con t.me/c/<id canale>/<id messaggio>,
+ *  senza il prefisso -100. E lo stesso id che teniamo in tg_id. */
+function messageLink(channelTgId: number, messageId: number): string {
+  return `https://t.me/c/${channelTgId}/${messageId}`;
+}
+
 interface ChannelGroup {
   channelId: number;
+  channelTgId: number;
   title: string;
   accounts: string[];
   jobNames: string[];
@@ -49,6 +56,7 @@ function groupByChannel(jobs: Job[]): ChannelGroup[] {
     if (!group) {
       group = {
         channelId: job.channel_id,
+        channelTgId: job.channel_tg_id,
         title: job.channel_title,
         accounts: [],
         jobNames: [],
@@ -367,14 +375,52 @@ export default function Files() {
                       {expanded === entry.id && entry.parts.length > 0 ? (
                         <tr>
                           <td colSpan={6} style={{ background: "var(--ground)" }}>
-                            <span className="section-label">Parti su Telegram</span>
-                            <div className="row wrap mono" style={{ gap: 16, marginTop: 8 }}>
-                              {entry.parts.map((part) => (
-                                <span key={part.part_index} style={{ color: "var(--muted)" }}>
-                                  parte {part.part_index + 1}: messaggio {part.message_id},{" "}
-                                  {formatBytes(part.size)} da offset {part.offset}
-                                </span>
-                              ))}
+                            <span className="section-label">
+                              {entry.parts.length === 1
+                                ? "Messaggio su Telegram"
+                                : `${entry.parts.length} parti su Telegram, in ordine`}
+                            </span>
+                            <div className="row wrap mono" style={{ gap: 14, marginTop: 8 }}>
+                              {entry.parts.map((part) => {
+                                const label = (
+                                  <>
+                                    {entry.parts.length > 1
+                                      ? `parte ${part.part_index + 1}: `
+                                      : ""}
+                                    messaggio {part.message_id}
+                                    <span style={{ color: "var(--muted)" }}>
+                                      {" "}
+                                      {formatBytes(part.size)}
+                                    </span>
+                                  </>
+                                );
+                                // Senza l'id del canale il link sarebbe rotto: meglio
+                                // il solo testo che un collegamento che non porta da
+                                // nessuna parte.
+                                if (!current?.channelTgId) {
+                                  return (
+                                    <span
+                                      key={part.part_index}
+                                      style={{ color: "var(--muted)" }}
+                                    >
+                                      {label}
+                                    </span>
+                                  );
+                                }
+                                return (
+                                  <a
+                                    key={part.part_index}
+                                    className="part-link"
+                                    href={messageLink(current.channelTgId, part.message_id)}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    onClick={(event) => event.stopPropagation()}
+                                  >
+                                    <ExternalLink size={11} />
+                                    {label}
+                                  </a>
+                                );
+                              })}
                             </div>
                           </td>
                         </tr>

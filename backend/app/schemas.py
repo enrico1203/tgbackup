@@ -142,6 +142,8 @@ class JobOut(Model):
 
     account_label: str = ""
     channel_title: str = ""
+    # Serve al frontend per costruire i link t.me/c/<canale>/<messaggio>.
+    channel_tg_id: int = 0
     stats: JobStats = JobStats()
 
 

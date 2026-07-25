@@ -74,6 +74,7 @@ export interface Job {
   created_at: string;
   account_label: string;
   channel_title: string;
+  channel_tg_id: number;
   stats: JobStats;
 }
 

@@ -658,6 +658,23 @@ input::placeholder {
   white-space: nowrap;
 }
 
+.part-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  white-space: nowrap;
+  transition: background 0.12s ease;
+}
+
+.part-link:hover {
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
 /* Tabelle */
 
 .table-wrap {

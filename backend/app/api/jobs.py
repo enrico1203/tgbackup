@@ -44,6 +44,7 @@ async def _to_out(session, job: SyncJob) -> JobOut:
     channel = await session.get(Channel, job.channel_id)
     out.account_label = account.label if account else ""
     out.channel_title = channel.title if channel else ""
+    out.channel_tg_id = channel.tg_id if channel else 0
     out.stats = await _stats(session, job.id)
     return out
 
