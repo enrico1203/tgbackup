@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, HardDrive, Trash2 } from "lucide-react";
+import { CheckCircle2, FileText, HardDrive, PencilLine, Trash2 } from "lucide-react";
 
 import { api } from "../lib/api";
 import { formatDateTime } from "../lib/format";
@@ -23,6 +23,10 @@ export default function Settings() {
   const [content, setContent] = useState("");
   const [editing, setEditing] = useState(false);
   const [browsing, setBrowsing] = useState<string | null>(null);
+  // Distingue "sto correggendo quella esistente" da "sto scrivendone una nuova":
+  // cambia solo il testo dei pulsanti, ma evita di far credere che si stia
+  // modificando quando invece si sta per sostituire tutto.
+  const [mode, setMode] = useState<"edit" | "replace">("edit");
 
   const { data, isLoading } = useQuery({
     queryKey: ["rclone"],
@@ -33,6 +37,8 @@ export default function Settings() {
     mutationFn: () => api.put<RcloneStatus>("/api/rclone", { content }),
     onSuccess: (status) => {
       queryClient.setQueryData(["rclone"], status);
+      // I remote possono essere cambiati: il form del job li rilegge.
+      void queryClient.invalidateQueries({ queryKey: ["rclone"] });
       setContent("");
       setEditing(false);
     },
@@ -42,6 +48,27 @@ export default function Settings() {
     mutationFn: () => api.del("/api/rclone"),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["rclone"] }),
   });
+
+  // La configurazione in chiaro si chiede solo qui, non al caricamento della pagina.
+  const load = useMutation({
+    mutationFn: () => api.get<{ content: string }>("/api/rclone/content"),
+    onSuccess: (result) => {
+      setContent(result.content);
+      setMode("edit");
+      setEditing(true);
+    },
+  });
+
+  const startFresh = () => {
+    setContent("");
+    setMode("replace");
+    setEditing(true);
+  };
+
+  const cancel = () => {
+    setEditing(false);
+    setContent("");
+  };
 
   return (
     <>
@@ -113,8 +140,16 @@ export default function Settings() {
               {editing || !data?.configured ? (
                 <>
                   <Field
-                    label="Contenuto di rclone.conf"
-                    hint="Viene salvato cifrato nel database e non viene mai rimandato al browser."
+                    label={
+                      mode === "edit" && data?.configured
+                        ? "Modifica rclone.conf"
+                        : "Contenuto di rclone.conf"
+                    }
+                    hint={
+                      mode === "edit" && data?.configured
+                        ? "Aggiungi o correggi le sezioni che ti servono, il resto resta com'e. Al salvataggio rclone rilegge tutto."
+                        : "Viene salvato cifrato nel database."
+                    }
                   >
                     <textarea
                       className="mono config-box"
@@ -141,41 +176,47 @@ export default function Settings() {
                       Salva e verifica
                     </button>
                     {data?.configured ? (
-                      <button
-                        type="button"
-                        className="btn ghost"
-                        onClick={() => {
-                          setEditing(false);
-                          setContent("");
-                        }}
-                      >
+                      <button type="button" className="btn ghost" onClick={cancel}>
                         Annulla
                       </button>
                     ) : null}
                   </div>
                 </>
               ) : (
-                <div className="row">
-                  <button type="button" className="btn ghost" onClick={() => setEditing(true)}>
-                    Sostituisci la configurazione
-                  </button>
-                  <button
-                    type="button"
-                    className="btn danger"
-                    onClick={() => {
-                      if (
-                        window.confirm(
-                          "Rimuovere la configurazione rclone? I job che usano un remote smetteranno di funzionare.",
-                        )
-                      ) {
-                        remove.mutate();
-                      }
-                    }}
-                  >
-                    <Trash2 size={14} />
-                    Rimuovi
-                  </button>
-                </div>
+                <>
+                  {load.isError ? <Alert>{(load.error as Error).message}</Alert> : null}
+                  <div className="row wrap">
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={load.isPending}
+                      onClick={() => load.mutate()}
+                    >
+                      {load.isPending ? <Spinner /> : <PencilLine size={14} />}
+                      Modifica la configurazione
+                    </button>
+                    <button type="button" className="btn ghost" onClick={startFresh}>
+                      <FileText size={14} />
+                      Riscrivi da zero
+                    </button>
+                    <button
+                      type="button"
+                      className="btn danger"
+                      onClick={() => {
+                        if (
+                          window.confirm(
+                            "Rimuovere la configurazione rclone? I job che usano un remote smetteranno di funzionare.",
+                          )
+                        ) {
+                          remove.mutate();
+                        }
+                      }}
+                    >
+                      <Trash2 size={14} />
+                      Rimuovi
+                    </button>
+                  </div>
+                </>
               )}
             </>
           )}

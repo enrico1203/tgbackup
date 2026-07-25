@@ -8,6 +8,7 @@ from ..models import Setting, utcnow
 from ..rclone import client as rclone
 from ..schemas import (
     RcloneConfigIn,
+    RcloneContentOut,
     RcloneStatusOut,
     RemoteCheckOut,
     RemoteEntryOut,
@@ -70,14 +71,31 @@ async def status_(session: SessionDep, _: ActiveUserDep) -> RcloneStatusOut:
     )
 
 
+@router.get("/content", response_model=RcloneContentOut)
+async def read_config(session: SessionDep, _: ActiveUserDep) -> RcloneContentOut:
+    """Restituisce la configurazione in chiaro, per poterla modificare.
+
+    Deliberatamente separato da GET /api/rclone: lo stato viene letto a ogni
+    caricamento della pagina, mentre le credenziali escono solo quando l'utente
+    chiede esplicitamente di modificarle.
+    """
+    content = await load_config(session)
+    if content is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Nessuna configurazione salvata")
+    return RcloneContentOut(content=content)
+
+
 @router.put("", response_model=RcloneStatusOut)
 async def save_config(
     payload: RcloneConfigIn, session: SessionDep, user: ActiveUserDep
 ) -> RcloneStatusOut:
-    content = payload.content.strip()
-    if not content:
+    # Si valida sul testo ripulito ma si salva quello originale: cosi rileggere per
+    # modificare restituisce esattamente il file che l'utente aveva scritto.
+    content = payload.content
+    stripped = content.strip()
+    if not stripped:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "La configurazione e vuota")
-    if "[" not in content:
+    if "[" not in stripped:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             "Non sembra un file rclone.conf: manca una sezione fra parentesi quadre",

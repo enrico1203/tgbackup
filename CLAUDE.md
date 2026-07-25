@@ -13,6 +13,12 @@ documentazione. Per le icone si usa `lucide-react` (SVG).
 
 **Niente scrittura sui dati dell'utente.** Le cartelle da salvare sono montate `:ro` nel compose.
 
+**Nessun test distruttivo contro lo stato di produzione.** Non esiste un ambiente separato, quindi
+prima di scrivere o cancellare qualcosa tramite le API (configurazione rclone, account, job) si
+controlla se c'e gia un valore reale. Una configurazione rclone dell'utente e stata sovrascritta e
+persa proprio cosi. Le verifiche che scrivono si fanno in un container usa e getta
+(`docker run --rm ... tgbackup-backend python ...`) con un DATA_DIR temporaneo.
+
 ## Stack
 
 Backend: Python 3.14 (Alpine), FastAPI, SQLAlchemy 2.0 async su SQLite (aiosqlite), Telethon 1.44, cryptg.

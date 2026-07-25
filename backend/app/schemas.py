@@ -225,6 +225,10 @@ class RcloneStatusOut(BaseModel):
     error: str | None
 
 
+class RcloneContentOut(BaseModel):
+    content: str
+
+
 class RemoteCheckOut(BaseModel):
     ok: bool
     error: str | None
