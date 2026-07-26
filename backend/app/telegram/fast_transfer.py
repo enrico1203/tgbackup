@@ -1,17 +1,17 @@
-"""Trasferimento parallelo su MTProto.
+"""Parallel transfer over MTProto.
 
-Telethon carica i chunk di un file uno dopo l'altro su una sola connessione, quindi la
-velocita e limitata dal round trip e non dalla banda. Qui si aprono piu MTProtoSender
-sulla stessa auth key e si distribuiscono le parti fra loro.
+Telethon uploads a file's chunks one after another on a single connection, so the speed
+is bound by the round trip rather than by bandwidth. Here several MTProtoSender share the
+same auth key and the parts are spread across them.
 
-Vincoli di protocollo da rispettare:
-  - massimo 20 connessioni per data center, oltre Telegram le blocca tutte
-  - la parte e al massimo 512KB, tutte le parti tranne l'ultima devono essere piene
-  - massimo 8000 parti per file, cioe 3.90625 GiB con parti da 512KB
-  - i file oltre 10MB usano SaveBigFilePartRequest e non hanno md5
+Protocol constraints to respect:
+  - at most 20 connections per data center, beyond that Telegram blocks them all
+  - a part is at most 512KB, and every part but the last must be full
+  - at most 8000 parts per file, that is 3.90625 GiB with 512KB parts
+  - files over 10MB use SaveBigFilePartRequest and carry no md5
 
-Il lettore resta sequenziale e i sender lavorano in parallelo: questo permette di
-caricare una fetta arbitraria di un file grande senza produrre file temporanei.
+The reader stays sequential while the senders work in parallel, which is what allows an
+arbitrary slice of a large file to be uploaded without producing temporary files.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ ProgressCallback = Callable[[int], None]
 
 
 def connection_count(size: int, maximum: int = MAX_CONNECTIONS) -> int:
-    """Una connessione ogni 5MB, fino al tetto. Sotto i 5MB il parallelismo non serve."""
+    """One connection per 5MB, up to the ceiling. Below 5MB parallelism buys nothing."""
     if size <= 0:
         return 1
     return max(1, min(maximum, math.ceil(size / (5 * 1024 * 1024))))
@@ -76,8 +76,8 @@ class _UploadSender:
             self._request = SaveFilePartRequest(file_id, index, b"")
 
     async def send(self, data: bytes) -> None:
-        # Le parti di uno stesso sender devono restare in ordine: si attende la precedente
-        # prima di accodare la successiva, ma i sender diversi procedono in parallelo.
+        # Parts belonging to the same sender must stay in order: the previous one is
+        # awaited before queueing the next, while different senders proceed in parallel.
         if self._pending is not None:
             await self._pending
         self._pending = asyncio.create_task(self._send(data))
@@ -132,8 +132,8 @@ class ParallelTransferrer:
     def __init__(self, client: TelegramClient, dc_id: int | None = None) -> None:
         self._client = client
         self._dc_id = dc_id or client.session.dc_id
-        # Sul DC di casa si riusa la auth key esistente; su un altro DC serve
-        # esportare l'autorizzazione una volta e riusarla per tutti i sender.
+        # On the home data center the existing auth key is reused; on another one the
+        # authorization must be exported once and then shared by all the senders.
         self._auth_key = (
             None if dc_id and client.session.dc_id != dc_id else client.session.auth_key
         )
@@ -162,10 +162,10 @@ class ParallelTransferrer:
 
 
 class LocalSliceReader:
-    """Lettore sequenziale di un intervallo di byte da un file locale.
+    """Sequential reader over a byte range of a local file.
 
-    Espone la stessa interfaccia del lettore rclone, cosi l'uploader non sa da dove
-    arrivino i byte. Usa letture posizionali, quindi non sposta il cursore del file.
+    It exposes the same interface as the rclone reader, so the uploader does not know
+    where the bytes come from. Positional reads are used, so the file cursor never moves.
     """
 
     def __init__(self, path: str, offset: int, length: int) -> None:
@@ -200,28 +200,28 @@ async def upload_slice(
     length: int,
     file_name: str,
     on_progress: ProgressCallback | None = None,
-    cancel: asyncio.Event | None = None,
+    cancel=None,
     source: str = "",
     max_connections: int = MAX_CONNECTIONS,
 ) -> InputFile | InputFileBig:
-    """Carica `length` byte presi da `reader` e restituisce l'handle Telegram.
+    """Uploads `length` bytes taken from `reader` and returns the Telegram handle.
 
-    `reader` e un contesto asincrono con un metodo read(size): puo essere un file
-    locale o un flusso rclone. In nessuno dei due casi si scrive su disco.
+    `reader` is an async context manager with a read(size) method: it can be a local file
+    or an rclone stream. In neither case is anything written to disk.
     """
     if length <= 0:
-        raise ValueError("La fetta da caricare e vuota")
+        raise ValueError("The slice to upload is empty")
 
     part_count = math.ceil(length / UPLOAD_PART_SIZE)
     if part_count > MAX_PARTS:
         raise ValueError(
-            f"La fetta richiede {part_count} parti, il massimo di protocollo e {MAX_PARTS}"
+            f"The slice needs {part_count} parts, the protocol maximum is {MAX_PARTS}"
         )
 
     file_id = helpers.generate_random_long()
     is_big = length > BIG_FILE_THRESHOLD
-    # Il tetto arriva da chi chiama: se piu job caricano sullo stesso account, il
-    # budget di 20 connessioni per data center e gia stato diviso fra loro.
+    # The ceiling comes from the caller: when several jobs upload on the same account,
+    # the budget of 20 connections per data center has already been divided among them.
     connections = connection_count(length, max(1, min(max_connections, MAX_CONNECTIONS)))
 
     transferrer = ParallelTransferrer(client)
@@ -246,13 +246,13 @@ async def upload_slice(
             ticker = 0
             while remaining > 0:
                 if cancel is not None and cancel.is_set():
-                    raise asyncio.CancelledError("Upload interrotto")
+                    raise asyncio.CancelledError("Upload interrupted")
                 size = min(UPLOAD_PART_SIZE, remaining)
                 chunk = await reader.read(size)
                 if not chunk:
                     raise OSError(
-                        f"La sorgente {source or file_name} si e esaurita prima del "
-                        f"previsto: mancano {remaining} byte"
+                        f"Source {source or file_name} ran out earlier than expected: "
+                        f"{remaining} bytes missing"
                     )
                 if md5 is not None:
                     md5.update(chunk)
@@ -278,12 +278,12 @@ async def download_document(
     out_fd: int,
     base_offset: int,
     on_progress: ProgressCallback | None = None,
-    cancel: asyncio.Event | None = None,
+    cancel=None,
 ) -> int:
-    """Scarica un documento in parallelo scrivendolo a `base_offset` dentro `out_fd`.
+    """Downloads a document in parallel, writing it at `base_offset` inside `out_fd`.
 
-    Usa scritture posizionali, quindi i sender possono scrivere contemporaneamente
-    senza contendersi la posizione del file.
+    Positional writes are used, so the senders can write at the same time without
+    fighting over the file position.
     """
     location = InputDocumentFileLocation(
         id=document.id,
@@ -305,7 +305,7 @@ async def download_document(
             index * DOWNLOAD_PART_SIZE,
             DOWNLOAD_PART_SIZE,
             stride,
-            # Parti assegnate a questo sender: index, index+connections, ...
+            # Parts assigned to this sender: index, index + connections, and so on.
             len(range(index, part_count, connections)),
         )
         for index in range(connections)
@@ -318,7 +318,7 @@ async def download_document(
         nonlocal written
         while True:
             if cancel is not None and cancel.is_set():
-                raise asyncio.CancelledError("Download interrotto")
+                raise asyncio.CancelledError("Download interrupted")
             item = await sender.next()
             if item is None:
                 return

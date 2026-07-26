@@ -1,8 +1,8 @@
-"""Scansione del filesystem a basso impatto.
+"""Low impact filesystem scanning.
 
-L'identita di un file e la terna (percorso relativo, dimensione, mtime in nanosecondi),
-letta con una sola stat per voce. Il contenuto non viene mai aperto ne letto: niente
-hash, niente checksum, nessuna pressione sulla cache del disco.
+A file's identity is the triple (relative path, size, mtime in nanoseconds), read with a
+single stat per entry. The content is never opened nor read: no hashing, no checksums, no
+pressure on the disk cache.
 """
 
 from __future__ import annotations
@@ -15,11 +15,11 @@ from dataclasses import dataclass
 
 log = logging.getLogger(__name__)
 
-# Ogni quante voci si aggiorna il contatore mostrato nella dashboard.
+# How many entries between updates of the counter shown on the dashboard.
 REPORT_EVERY = 25
 
-# Callback chiamata dal thread di scansione con (file trovati, cartelle visitate,
-# byte totali, cartella corrente).
+# Callback invoked by the scanning thread with (files found, folders visited,
+# total bytes, current folder).
 ScanProgress = Callable[[int, int, int, str], None]
 
 
@@ -32,14 +32,14 @@ class ScannedFile:
 
 
 def _walk(root: str, on_progress: ScanProgress | None = None) -> list[ScannedFile]:
-    """Percorso ricorsivo con os.scandir, senza seguire i link simbolici.
+    """Recursive walk with os.scandir, without following symbolic links.
 
-    scandir riusa i dati della directory entry, quindi is_dir e is_file spesso non
-    costano una stat aggiuntiva. La stat vera serve solo per size e mtime, e non
-    tocca mai il contenuto del file.
+    scandir reuses the directory entry data, so is_dir and is_file often cost no extra
+    stat. The real stat is only needed for size and mtime, and never touches the file
+    content.
 
-    Su un mount di rete la camminata puo durare a lungo, quindi riporta l'avanzamento
-    mentre procede invece di restare muta fino alla fine.
+    On a network mount the walk can take a long time, so it reports progress as it goes
+    instead of staying silent until the end.
     """
     found: list[ScannedFile] = []
     stack = [root]
@@ -69,9 +69,9 @@ def _walk(root: str, on_progress: ScanProgress | None = None) -> list[ScannedFil
                             )
                             total_bytes += info.st_size
                     except OSError as exc:
-                        log.warning("Voce ignorata %s: %s", entry.path, exc)
+                        log.warning("Entry skipped %s: %s", entry.path, exc)
         except OSError as exc:
-            log.warning("Cartella non leggibile %s: %s", current, exc)
+            log.warning("Folder not readable %s: %s", current, exc)
 
         since_report += 1
         if on_progress is not None and since_report >= REPORT_EVERY:
@@ -87,21 +87,21 @@ def _walk(root: str, on_progress: ScanProgress | None = None) -> list[ScannedFil
 async def scan(
     root: str, files_per_sec: int = 0, on_progress: ScanProgress | None = None
 ) -> list[ScannedFile]:
-    """Scansiona `root` in un thread, con throttle opzionale.
+    """Scans `root` in a thread, with optional throttling.
 
-    `files_per_sec` a zero significa nessun limite. Sopra zero il tempo totale viene
-    diluito per non saturare il disco quando la cartella e su un supporto lento o
-    condiviso con altri carichi.
+    `files_per_sec` at zero means no limit. Above zero the total time is spread out so the
+    disk is not saturated when the folder sits on slow storage or is shared with other
+    workloads.
     """
     if not os.path.isdir(root):
-        raise FileNotFoundError(f"La cartella {root} non esiste dentro il container")
+        raise FileNotFoundError(f"Folder {root} does not exist inside the container")
 
     files = await asyncio.to_thread(_walk, root, on_progress)
 
     if files_per_sec > 0:
-        # La camminata e gia finita: si distribuisce la pausa dovuta in blocchi, cosi
-        # il resto dell'applicazione resta reattivo e il ritmo richiesto e rispettato
-        # sul ciclo completo di scansione.
+        # The walk is already over: the pause owed is spread across chunks, so the rest
+        # of the application stays responsive and the requested pace is respected over the
+        # complete scan cycle.
         total_delay = len(files) / files_per_sec
         step = 0.2
         waited = 0.0

@@ -99,7 +99,7 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
       await queryClient.invalidateQueries({ queryKey: ["jobs"] });
       onClose();
     },
-    onError: (exc) => setError(exc instanceof Error ? exc.message : "Salvataggio non riuscito"),
+    onError: (exc) => setError(exc instanceof Error ? exc.message : "Saving failed"),
   });
 
   const privateChannels = (channels ?? []).filter((channel) => channel.is_private);
@@ -111,12 +111,12 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
   return (
     <>
     <Modal
-      title={job ? `Modifica ${job.name}` : "Nuovo sync job"}
+      title={job ? `Edit ${job.name}` : "New sync job"}
       onClose={onClose}
       footer={
         <>
           <button type="button" className="btn ghost" onClick={onClose}>
-            Annulla
+            Cancel
           </button>
           <button
             type="button"
@@ -125,19 +125,19 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
             onClick={() => save.mutate()}
           >
             {save.isPending ? <Spinner /> : null}
-            {job ? "Salva" : "Crea il job"}
+            {job ? "Save" : "Create the job"}
           </button>
         </>
       }
     >
       {error ? <Alert>{error}</Alert> : null}
 
-      <Field label="Nome del job">
+      <Field label="Job name">
         <input value={name} onChange={(e) => setName(e.target.value)} autoFocus />
       </Field>
 
       <div className="grid-2">
-        <Field label="Account Telegram">
+        <Field label="Telegram account">
           <select
             value={accountId ?? ""}
             disabled={Boolean(job)}
@@ -147,7 +147,7 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
             }}
           >
             <option value="" disabled>
-              Scegli un account
+              Pick an account
             </option>
             {(accounts ?? []).map((item) => (
               <option key={item.id} value={item.id}>
@@ -157,14 +157,14 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
           </select>
         </Field>
 
-        <Field label="Canale privato di destinazione">
+        <Field label="Destination private channel">
           <select
             value={channelId ?? ""}
             disabled={accountId === null}
             onChange={(e) => setChannelId(Number(e.target.value))}
           >
             <option value="" disabled>
-              {accountId === null ? "Scegli prima un account" : "Scegli un canale"}
+              {accountId === null ? "Pick an account first" : "Pick a channel"}
             </option>
             {privateChannels.map((channel) => (
               <option key={channel.id} value={channel.id}>
@@ -175,7 +175,7 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
         </Field>
       </div>
 
-      <Field label="Sorgente dei file">
+      <Field label="File source">
         <div className="row" style={{ gap: 8 }}>
           <button
             type="button"
@@ -183,7 +183,7 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
             onClick={() => setSourceType("local")}
           >
             <FolderOpen size={13} />
-            Cartella locale
+            Local folder
           </button>
           <button
             type="button"
@@ -193,19 +193,19 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
             title={
               rcloneStatus?.configured
                 ? undefined
-                : "Incolla prima il rclone.conf nella pagina Impostazioni"
+                : "Paste your rclone.conf in the Settings page first"
             }
           >
             <HardDrive size={13} />
-            Remote rclone
+            Rclone remote
           </button>
         </div>
       </Field>
 
       {sourceType === "local" ? (
         <Field
-          label="Cartella locale"
-          hint="Percorso interno al container, cosi come e montato nel docker-compose.yml."
+          label="Local folder"
+          hint="Path inside the container, exactly as mounted in docker-compose.yml."
         >
           <input
             value={localPath}
@@ -216,8 +216,8 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
         </Field>
       ) : (
         <Field
-          label="Remote rclone"
-          hint="Nome del remote con i due punti, eventualmente seguito da una sottocartella. Letto via API, senza mount."
+          label="Rclone remote"
+          hint="Remote name with the colon, optionally followed by a subfolder. Read through the API, no mount."
         >
           <div className="row" style={{ gap: 8 }}>
             <select
@@ -226,7 +226,7 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
               onChange={(e) => setRemote(e.target.value)}
             >
               <option value="" disabled>
-                Scegli un remote
+                Pick a remote
               </option>
               {(rcloneStatus?.remotes ?? []).map((item) => (
                 <option key={item} value={item}>
@@ -245,17 +245,17 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
               className="btn ghost small"
               disabled={!remote.includes(":")}
               onClick={() => setBrowsing(remote)}
-              title="Sfoglia il contenuto e scegli una sottocartella"
+              title="Browse the contents and pick a subfolder"
             >
               <FolderSearch size={13} />
-              Sfoglia
+              Browse
             </button>
           </div>
         </Field>
       )}
 
       <div className="grid-2">
-        <Field label="Ogni quante ore" hint="L'attesa parte dalla fine dell'esecuzione precedente.">
+        <Field label="Every how many hours" hint="The wait starts from the end of the previous run.">
           <input
             value={intervalHours}
             onChange={(e) => setIntervalHours(e.target.value.replace(/[^\d.]/g, ""))}
@@ -264,8 +264,8 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
         </Field>
 
         <Field
-          label="Velocita di scansione"
-          hint="File al secondo. Zero significa nessun limite."
+          label="Scan rate"
+          hint="Files per second. Zero means no limit."
         >
           <input
             value={scanRate}
@@ -276,11 +276,11 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
       </div>
 
       <Field
-        label="Dimensione massima di una parte (GB)"
+        label="Maximum size of a part (GB)"
         hint={
           account?.is_premium
-            ? "Account Premium: il limite di Telegram e circa 3.9 GB per file."
-            : "Account senza Premium: il limite di Telegram e 2 GB per file."
+            ? "Premium account: the Telegram limit is about 3.9 GB per file."
+            : "Account without Premium: the Telegram limit is 2 GB per file."
         }
       >
         <input
@@ -292,7 +292,7 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
 
       <label className="switch">
         <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-        <span>Esegui automaticamente secondo l'intervallo</span>
+        <span>Run automatically on the interval</span>
       </label>
     </Modal>
 
@@ -334,28 +334,28 @@ function JobCard({ job, onEdit }: { job: Job; onEdit: (job: Job) => void }) {
               {phaseLabel(progress?.phase ?? job.phase ?? "")}
             </Pill>
           ) : failed ? (
-            <Pill tone="bad">Errore</Pill>
+            <Pill tone="bad">Error</Pill>
           ) : job.enabled ? (
-            <Pill tone="mute">In attesa</Pill>
+            <Pill tone="mute">Idle</Pill>
           ) : (
-            <Pill tone="warn">Disattivato</Pill>
+            <Pill tone="warn">Disabled</Pill>
           )}
 
           {running ? (
             <button type="button" className="btn ghost small" onClick={() => stop.mutate()}>
               <Square size={13} />
-              Ferma
+              Stop
             </button>
           ) : (
             <button type="button" className="btn small" onClick={() => start.mutate()}>
               <Play size={13} />
-              Avvia ora
+              Run now
             </button>
           )}
 
           <button type="button" className="btn ghost small" onClick={() => onEdit(job)} disabled={running}>
             <Pencil size={13} />
-            Modifica
+            Edit
           </button>
 
           <button
@@ -363,7 +363,7 @@ function JobCard({ job, onEdit }: { job: Job; onEdit: (job: Job) => void }) {
             className="btn danger small"
             disabled={running}
             onClick={() => {
-              if (window.confirm(`Eliminare il job ${job.name}? I file su Telegram restano.`)) {
+              if (window.confirm(`Delete job ${job.name}? The files on Telegram stay.`)) {
                 remove.mutate();
               }
             }}
@@ -385,10 +385,10 @@ function JobCard({ job, onEdit }: { job: Job; onEdit: (job: Job) => void }) {
               {job.source_type === "rclone" ? job.remote : job.local_path}
             </span>
           </span>
-          <span>verso {job.channel_title}</span>
+          <span>to {job.channel_title}</span>
           <span>account {job.account_label}</span>
-          <span>ogni {formatInterval(job.interval_hours)}</span>
-          <span>parti da {formatBytes(job.part_size_bytes)}</span>
+          <span>every {formatInterval(job.interval_hours)}</span>
+          <span>parts of {formatBytes(job.part_size_bytes)}</span>
         </div>
 
         {running && progress ? (
@@ -398,16 +398,16 @@ function JobCard({ job, onEdit }: { job: Job; onEdit: (job: Job) => void }) {
             <ProgressBar done={job.stats.bytes_uploaded} total={job.stats.bytes_total} />
             <div className="row wrap num" style={{ gap: 20, fontSize: 12.5, color: "var(--muted)" }}>
               <span>
-                {job.stats.files_uploaded.toLocaleString("it-IT")} di{" "}
-                {job.stats.files_total.toLocaleString("it-IT")} file su Telegram
+                {job.stats.files_uploaded.toLocaleString("en-US")} of{" "}
+                {job.stats.files_total.toLocaleString("en-US")} files on Telegram
               </span>
               <span>{formatBytes(job.stats.bytes_uploaded)}</span>
               {job.stats.files_pending > 0 ? (
-                <span>{job.stats.files_pending.toLocaleString("it-IT")} in attesa</span>
+                <span>{job.stats.files_pending.toLocaleString("en-US")} pending</span>
               ) : null}
               {job.stats.files_error > 0 ? (
                 <span style={{ color: "var(--danger)" }}>
-                  {job.stats.files_error.toLocaleString("it-IT")} in errore
+                  {job.stats.files_error.toLocaleString("en-US")} in error
                 </span>
               ) : null}
             </div>
@@ -415,9 +415,9 @@ function JobCard({ job, onEdit }: { job: Job; onEdit: (job: Job) => void }) {
         )}
 
         <div className="row wrap" style={{ gap: 24, fontSize: 12, color: "var(--muted)" }}>
-          <span>ultima corsa {formatDateTime(job.last_finished_at)}</span>
-          <span>prossima {job.enabled ? formatDateTime(job.next_run_at) : "disattivata"}</span>
-          <Link to={`/files?job=${job.id}`}>Vedi i file</Link>
+          <span>last run {formatDateTime(job.last_finished_at)}</span>
+          <span>next {job.enabled ? formatDateTime(job.next_run_at) : "disabled"}</span>
+          <Link to={`/files?job=${job.id}`}>See the files</Link>
         </div>
       </div>
     </Card>
@@ -439,22 +439,22 @@ export default function Jobs() {
       <div className="row" style={{ justifyContent: "flex-end" }}>
         <button type="button" className="btn" onClick={() => setCreating(true)}>
           <Plus size={15} />
-          Nuovo sync job
+          New sync job
         </button>
       </div>
 
       {isLoading ? (
         <Card>
           <div className="card-body row" style={{ color: "var(--muted)" }}>
-            <Spinner /> Caricamento
+            <Spinner /> Loading
           </div>
         </Card>
       ) : !data || data.length === 0 ? (
         <Card>
           <Empty
             icon={<CloudUpload size={26} color="var(--muted)" />}
-            title="Nessun sync job"
-            hint="Un sync job tiene una cartella locale specchiata dentro un canale privato: carica i file nuovi, cancella quelli spariti e ricarica quelli cambiati."
+            title="No sync jobs"
+            hint="A sync job keeps a source mirrored inside a private channel: it uploads new files, deletes the ones that disappeared and re-uploads the changed ones."
           />
         </Card>
       ) : (

@@ -34,7 +34,7 @@ async def seed_admin() -> None:
             )
         )
         await session.commit()
-        log.info("Utente admin creato, password iniziale admin, cambio obbligatorio al login")
+        log.info("Admin user created, initial password admin, change required at sign in")
 
 
 @asynccontextmanager
@@ -44,14 +44,14 @@ async def lifespan(_: FastAPI):
         await connection.run_sync(Base.metadata.create_all)
     await seed_admin()
 
-    # rclone vuole un file: si riscrive da quello cifrato nel database a ogni avvio.
+    # rclone wants a file: it is rewritten from the encrypted copy in the database at every start.
     async with SessionLocal() as session:
         await rclone.sync_config_to_disk(session)
 
     hub.start()
     await manager.restore_sessions()
     await scheduler.start()
-    log.info("tgbackup avviato")
+    log.info("tgbackup started")
 
     yield
 

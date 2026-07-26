@@ -50,9 +50,9 @@ class TelegramAccount(Base):
     is_premium: Mapped[bool] = mapped_column(Boolean, default=False)
     default_part_size: Mapped[int] = mapped_column(BigInteger, default=1_900_000_000)
 
-    # Quanti job possono caricare insieme su questo account. Il tetto di 20
-    # connessioni per data center viene diviso fra loro, quindi alzare questo
-    # numero non aumenta la banda totale: distribuisce la stessa fra piu job.
+    # How many jobs may upload at the same time on this account. The ceiling of 20
+    # connections per data center is divided among them, so raising this number does
+    # not increase total bandwidth: it spreads the same bandwidth across more jobs.
     max_concurrent_jobs: Mapped[int] = mapped_column(Integer, default=2)
 
     # pending_code, pending_password, connected, disconnected, error
@@ -93,14 +93,14 @@ class SyncJob(Base):
     account_id: Mapped[int] = mapped_column(ForeignKey("telegram_accounts.id", ondelete="CASCADE"))
     channel_id: Mapped[int] = mapped_column(ForeignKey("channels.id", ondelete="CASCADE"))
 
-    # local: cartella montata nel container. rclone: remote letto via API, senza mount.
+    # local: folder mounted in the container. rclone: remote read through the API, no mount.
     source_type: Mapped[str] = mapped_column(String(16), default="local")
     local_path: Mapped[str] = mapped_column(Text, default="")
-    # Percorso rclone completo, ad esempio "jottamio-crypt:" oppure "gdrive:Foto".
+    # Full rclone path, for example "mycloud-crypt:" or "gdrive:Photos".
     remote: Mapped[str | None] = mapped_column(Text)
 
     interval_hours: Mapped[float] = mapped_column(Float, default=24.0)
-    # 0 = nessun limite. Sopra a zero e il tetto di file esaminati al secondo.
+    # 0 means no limit. Above zero it is the ceiling of files examined per second.
     scan_files_per_sec: Mapped[int] = mapped_column(Integer, default=0)
     part_size_bytes: Mapped[int] = mapped_column(BigInteger, default=1_900_000_000)
 
@@ -161,7 +161,7 @@ class FilePart(Base):
 
 
 class Setting(Base):
-    """Impostazioni globali. Il valore puo essere cifrato: lo dice `encrypted`."""
+    """Global settings. The value may be encrypted, as indicated by `encrypted`."""
 
     __tablename__ = "settings"
 

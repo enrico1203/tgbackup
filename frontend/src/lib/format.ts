@@ -17,7 +17,7 @@ export function formatSpeed(bytesPerSecond: number): string {
 }
 
 export function formatDuration(seconds: number | null): string {
-  if (seconds === null || !Number.isFinite(seconds) || seconds < 0) return "n.d.";
+  if (seconds === null || !Number.isFinite(seconds) || seconds < 0) return "unknown";
   const total = Math.round(seconds);
   if (total < 60) return `${total}s`;
 
@@ -25,14 +25,14 @@ export function formatDuration(seconds: number | null): string {
   const hours = Math.floor((total % 86400) / 3600);
   const minutes = Math.floor((total % 3600) / 60);
 
-  if (days > 0) return `${days}g ${hours}h`;
+  if (days > 0) return `${days}d ${hours}h`;
   if (hours > 0) return `${hours}h ${minutes}m`;
   return `${minutes}m ${total % 60}s`;
 }
 
 export function formatDateTime(value: string | null): string {
-  if (!value) return "mai";
-  return new Date(value).toLocaleString("it-IT", {
+  if (!value) return "never";
+  return new Date(value).toLocaleString("en-US", {
     day: "2-digit",
     month: "2-digit",
     year: "numeric",
@@ -42,23 +42,23 @@ export function formatDateTime(value: string | null): string {
 }
 
 export function formatRelative(value: string | null): string {
-  if (!value) return "mai";
+  if (!value) return "never";
   const delta = (new Date(value).getTime() - Date.now()) / 1000;
   const absolute = Math.abs(delta);
-  const suffix = delta < 0 ? "fa" : "";
-  const prefix = delta >= 0 ? "fra" : "";
+  const suffix = delta < 0 ? "ago" : "";
+  const prefix = delta >= 0 ? "in" : "";
   const text = formatDuration(absolute);
   return `${prefix} ${text} ${suffix}`.trim();
 }
 
 export function formatInterval(hours: number): string {
-  if (hours < 1) return `${Math.round(hours * 60)} minuti`;
-  if (hours === 1) return "1 ora";
+  if (hours < 1) return `${Math.round(hours * 60)} minutes`;
+  if (hours === 1) return "1 hour";
   if (hours % 24 === 0) {
     const days = hours / 24;
-    return days === 1 ? "1 giorno" : `${days} giorni`;
+    return days === 1 ? "1 day" : `${days} days`;
   }
-  return `${hours} ore`;
+  return `${hours} hours`;
 }
 
 export function percent(done: number, total: number): number {

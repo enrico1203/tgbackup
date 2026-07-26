@@ -1,7 +1,7 @@
-"""Stato di avanzamento in memoria e diffusione via WebSocket.
+"""In memory progress state, broadcast over WebSocket.
 
-I contatori vivono nel processo e non toccano il database: vengono aggiornati a ogni
-parte caricata e spinti ai client una volta al secondo.
+The counters live in the process and never touch the database: they are updated on every
+uploaded part and pushed to the clients once per second.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from ..config import settings
 
 log = logging.getLogger(__name__)
 
-# Costante di smorzamento della media esponenziale della velocita, in secondi.
+# Damping constant of the exponential moving average of the speed, in seconds.
 SPEED_SMOOTHING = 3.0
 
 
@@ -35,8 +35,8 @@ class JobProgress:
     bytes_total: int = 0
     bytes_done: int = 0
 
-    # Avanzamento della scansione. Su un mount di rete la camminata dura a lungo e
-    # senza questi contatori la dashboard resterebbe ferma su "in preparazione".
+    # Scan progress. On a network mount the walk takes a long time and without these
+    # counters the dashboard would sit still on "preparing".
     scanned_files: int = 0
     scanned_dirs: int = 0
     scanned_bytes: int = 0
@@ -193,8 +193,8 @@ class ProgressHub:
                 continue
             payload = json.dumps(self.snapshot())
             for queue in list(self._subscribers):
-                # Un client lento non deve rallentare gli altri: si scarta il frame
-                # vecchio, tanto il successivo arriva fra un secondo.
+                # A slow client must not slow the others down: the stale frame is dropped,
+                # the next one arrives in a second anyway.
                 if queue.full():
                     with contextlib.suppress(asyncio.QueueEmpty):
                         queue.get_nowait()

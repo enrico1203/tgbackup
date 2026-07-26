@@ -1,8 +1,8 @@
-"""Ricostruzione di un file a partire dalle sue parti su Telegram.
+"""Rebuilding a file from its parts on Telegram.
 
-Le parti sono documenti separati, ognuno con il proprio message id. Si riscaricano in
-ordine e si scrivono alla loro posizione dentro un unico file di destinazione, quindi
-il risultato e byte per byte identico all'originale.
+The parts are separate documents, each with its own message id. They are downloaded in
+order and written at their position inside a single destination file, so the result is
+byte for byte identical to the original.
 """
 
 from __future__ import annotations
@@ -25,13 +25,13 @@ log = logging.getLogger(__name__)
 
 
 async def restore_file(file_id: int) -> str:
-    """Avvia il restore e restituisce l'identificativo con cui seguirlo."""
+    """Starts the restore and returns the identifier used to follow it."""
     async with SessionLocal() as session:
         entry = await session.get(FileEntry, file_id)
         if entry is None:
-            raise ValueError("File non trovato")
+            raise ValueError("File not found")
         if entry.state != "uploaded":
-            raise ValueError("Il file non e stato caricato su Telegram")
+            raise ValueError("The file has not been uploaded to Telegram")
 
         job = await session.get(SyncJob, entry.job_id)
         channel = await session.get(Channel, job.channel_id)
@@ -49,7 +49,7 @@ async def restore_file(file_id: int) -> str:
         peer = manager.input_peer(channel)
 
     if not parts:
-        raise ValueError("Nessuna parte registrata per questo file")
+        raise ValueError("No parts recorded for this file")
 
     restore_id = uuid.uuid4().hex[:12]
     target = settings.restore_dir / restore_id / rel_path
@@ -81,8 +81,8 @@ async def _run_restore(
         await asyncio.to_thread(os.makedirs, target.parent, 0o755, True)
         fd = await asyncio.to_thread(os.open, str(target), os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
         try:
-            # Si dimensiona subito il file: le scritture posizionali delle parti
-            # successive non devono estendere il file una alla volta.
+            # The file is sized upfront: the positional writes of later parts should not
+            # have to extend the file one at a time.
             await asyncio.to_thread(os.ftruncate, fd, progress.bytes_total)
 
             for part_index, offset, size, message_id in parts:
@@ -90,23 +90,23 @@ async def _run_restore(
                 message = messages if not isinstance(messages, list) else messages[0]
                 if message is None or message.document is None:
                     raise RuntimeError(
-                        f"Il messaggio {message_id} della parte {part_index + 1} "
-                        "non esiste piu sul canale"
+                        f"Message {message_id} of part {part_index + 1} "
+                        "no longer exists in the channel"
                     )
                 written = await download_document(
                     client, message.document, fd, offset, on_progress=progress.add_bytes
                 )
                 if written != size:
                     raise RuntimeError(
-                        f"La parte {part_index + 1} ha restituito {written} byte "
-                        f"invece di {size}"
+                        f"Part {part_index + 1} returned {written} bytes "
+                        f"instead of {size}"
                     )
         finally:
             await asyncio.to_thread(os.close, fd)
 
         progress.phase = "done"
-        log.info("Restore completato in %s", target)
+        log.info("Restore completed at %s", target)
     except Exception as exc:
-        log.exception("Restore fallito")
+        log.exception("Restore failed")
         progress.phase = "error"
         progress.error = str(exc)[:500]

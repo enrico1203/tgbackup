@@ -7,10 +7,10 @@ services:
       TZ: ${TZ:-Europe/Rome}
       DATA_DIR: /data
     volumes:
-      # Database SQLite e file ricostruiti dal restore
+      # SQLite database, rclone configuration and files rebuilt by restore
       - ./data:/data
-      # Cartelle da salvare su Telegram, sempre in sola lettura.
-      # Aggiungine altre qui sotto con la stessa forma, poi: docker compose up -d backend
+      # Folders to back up to Telegram, always read-only.
+      # Add more below in the same form, then: docker compose up -d --no-deps backend
       - /mnt/documenti:/mnt/documenti:ro
       - /mnt/jotta2:/mnt/jotta2:ro
     networks:
@@ -22,7 +22,7 @@ services:
     depends_on:
       - backend
     ports:
-      - "127.0.0.1:${FRONTEND_PORT:-8080}:80"
+      - "127.0.0.1:${FRONTEND_PORT:-8081}:80"
     networks:
       - tgbackup
 

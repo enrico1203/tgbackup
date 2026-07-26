@@ -1,43 +1,47 @@
 # tgbackup
 
-Applicazione self-hosted che tiene specchiate cartelle locali o remote rclone dentro canali
-Telegram privati. Carica i file nuovi, cancella dal canale quelli spariti, ricarica quelli
-modificati, spezza i file oltre la soglia e sa ricomporli.
+Self-hosted application that keeps local folders or rclone remotes mirrored inside private
+Telegram channels. Uploads new files, deletes from the channel the ones that disappeared,
+re-uploads the modified ones, splits files above the threshold and can reassemble them.
 
-## Regole operative (vincolanti)
+## Operating rules (binding)
 
-**Niente ambiente di test.** Nessuna suite di test, nessuno staging. Si scrive direttamente il
-codice di produzione e si mette in esecuzione. Non perdere tempo a provare: scrivilo e basta.
+**Everything in English.** Interface, code, comments, docstrings, log messages, error messages,
+commit messages, documentation. No exceptions, including when the request that triggered the work
+was written in another language.
 
-**Niente emoji.** In nessun punto: interfaccia, codice, commenti, log, commit, documentazione.
-Per le icone si usa `lucide-react` (SVG).
+**No test environment.** No test suite, no staging. Production code is written directly and put in
+execution. Do not waste time trying things out: just write it.
 
-**Niente scrittura sui dati dell'utente.** Le cartelle da salvare sono montate `:ro`.
+**No emoji.** Nowhere: interface, code, comments, logs, commits, documentation. Icons come from
+`lucide-react` (SVG).
 
-**Nessun test distruttivo contro la produzione.** Non esiste un ambiente separato, quindi prima di
-scrivere o cancellare tramite le API (configurazione rclone, account, job) si controlla se c'e gia
-un valore reale. Una configurazione rclone dell'utente e stata persa proprio cosi. Le verifiche che
-scrivono si fanno in un container usa e getta: `docker run --rm ... tgbackup-backend python ...`
-con un `DATA_DIR` temporaneo.
+**Never write to the user's data.** Folders to back up are mounted `:ro`.
 
-**Attenzione a `docker compose up -d <servizio>`**: per via di `depends_on` riavvia anche il
-backend e interrompe i job in corso. Usare `--no-deps`.
+**No destructive tests against production.** There is no separate environment, so before writing or
+deleting anything through the APIs (rclone configuration, accounts, jobs) check whether a real value
+is already there. A user's rclone configuration was lost exactly this way. Verifications that write
+run in a throwaway container: `docker run --rm ... tgbackup-backend python ...` with a temporary
+`DATA_DIR`.
+
+**Careful with `docker compose up -d <service>`**: because of `depends_on` it also restarts the
+backend and interrupts running jobs. Use `--no-deps`.
 
 ## Stack
 
-Backend: Python 3.14 Alpine, FastAPI, SQLAlchemy 2.0 async su SQLite, Telethon 1.44, cryptg,
-rclone 1.74 (binario statico ufficiale).
+Backend: Python 3.14 Alpine, FastAPI, SQLAlchemy 2.0 async on SQLite, Telethon 1.44, cryptg,
+rclone 1.74 (official static binary).
 Frontend: React 19, Vite 8, TypeScript 7, react-router 8, TanStack Query 5, lucide-react.
-Infra: docker compose con `backend`, `frontend` (nginx), `cloudflared`.
+Infra: docker compose with `backend`, `frontend` (nginx), `cloudflared`.
 
-## Struttura
+## Layout
 
 ```
 backend/app/
   config.py db.py models.py schemas.py security.py deps.py migrate.py main.py
   api/       auth accounts jobs files dashboard rclone ws
-  telegram/  manager.py (registry client, peer) fast_transfer.py (upload/download paralleli)
-  rclone/    client.py (lsjson, cat a intervalli, anteprima)
+  telegram/  manager.py (client registry, peers) fast_transfer.py (parallel upload/download)
+  rclone/    client.py (lsjson, ranged cat, preview)
   sync/      source.py scanner.py runner.py scheduler.py restore.py progress.py
 frontend/src/
   pages/     Login ChangePassword Dashboard Jobs Accounts Files Runs Settings
@@ -45,84 +49,91 @@ frontend/src/
   lib/       api auth progress types format theme
 ```
 
-## Concetti chiave
+## Key concepts
 
-**Identita di un file**: `(rel_path, size, mtime_ns)`. Mai letto il contenuto per capire cosa e
-cambiato: una sola `stat` in locale, il campo `ModTime` di `lsjson` sui remote. Se cambia size o
-mtime il file viene cancellato da Telegram e ricaricato. Un rinominato e `to_delete` piu `pending`.
+**File identity**: `(rel_path, size, mtime_ns)`. The content is never read to detect changes: a
+single `stat` locally, the `ModTime` field of `lsjson` on remotes. If size or mtime change, the file
+is deleted from Telegram and re-uploaded. A rename is a `to_delete` plus a `pending`.
 
-**Split**: 8000 parti da 512KB e il tetto MTProto, cioe 3.90625 GiB. Default 3.9e9 byte per account
-Premium, 1.9e9 per gli altri, rilevato da `get_me().premium`.
+**Split**: 8000 parts of 512KB is the MTProto ceiling, that is 3.90625 GiB. Default 3.9e9 bytes for
+Premium accounts, 1.9e9 for the others, detected from `get_me().premium`.
 
-**Upload parallelo**: `fast_transfer.py` apre fino a 20 `MTProtoSender` sulla stessa auth key; oltre
-20 per DC Telegram le blocca tutte. Il lettore e sequenziale e i sender lavorano in parallelo,
-quindi si carica una fetta di file grande senza file temporanei. Foto e video sempre come documento
-(`force_document=True`), mai ricompressi.
+**Parallel upload**: `fast_transfer.py` opens up to 20 `MTProtoSender` on the same auth key; beyond
+20 per data center Telegram blocks them all. The reader is sequential and the senders work in
+parallel, so a slice of a large file is uploaded without temporary files. Photos and videos always
+go as documents (`force_document=True`), never recompressed.
 
-**Sorgenti**: `sync/source.py` astrae cartella locale e remote rclone dietro la stessa interfaccia
-(`list_files`, `reader`). L'uploader non sa da dove arrivano i byte.
+**Connection budget**: the 20 connections are per data center, not per job. `max_concurrent_jobs` on
+the account divides the budget: with 2 concurrent jobs each gets 10. Raising it does not increase
+total bandwidth, it spreads the same bandwidth across more jobs.
 
-**rclone senza mount**: `lsjson -R` per elencare, `cat --offset --count` per le fette. Misurato su
-un remote da 12 TB e 16.709 file: elenco 11,6 s contro circa 5 minuti camminando il mount FUSE,
-lettura 43,5 MB/s contro 22 MB/s. Nessuno staging su disco. Verificato che i byte letti via `cat`
-sono identici a quelli letti dal mount.
+**Sources**: `sync/source.py` hides local folders and rclone remotes behind the same interface
+(`list_files`, `reader`). The uploader does not know where the bytes come from.
 
-**Peer Telegram**: costruito da `tg_id` piu `access_hash` salvati, mai risolto con `get_entity` su
-un id numerico. Un intero positivo nudo viene interpretato come utente, e `StringSession` non
-conserva la cache delle entita, quindi dopo un riavvio la risoluzione fallirebbe.
+**rclone without mount**: `lsjson -R` to list, `cat --offset --count` for slices. Measured on a
+remote with 12 TB and 16,709 files: listing 11.6 s against roughly 5 minutes walking the FUSE mount,
+reading 43.5 MB/s against 22 MB/s. No disk staging. Verified that bytes read through `cat` are
+identical to those read from the mount.
 
-**Scheduler**: supervisor asyncio con tick da 10 s. Lo stato `running` sta in DB, quindi lo stesso
-job non si sovrappone mai a se stesso anche se dura giorni. `next_run_at` si calcola dalla fine del
-run. Se a fermare un job e lo spegnimento del processo, `next_run_at` resta invariato e il job
-riprende al riavvio invece di slittare di un intervallo intero. Job sullo stesso account condividono
-un semaforo per non contendersi le connessioni.
+**Telegram peers**: built from the stored `tg_id` plus `access_hash`, never resolved with
+`get_entity` on a numeric id. A bare positive integer is read as a user, and `StringSession` does not
+keep the entity cache, so resolution would fail after a restart.
 
-**Durabilita**: ogni parte viene registrata in DB appena il messaggio e inviato. Un arresto a meta di
-un file grande non lascia messaggi orfani: alla riscansione il file passa da `stale`, le parti gia
-inviate vengono cancellate dal canale e il file riparte pulito.
+**Scheduler**: asyncio supervisor with a 10 s tick. The `running` state lives in the database, so the
+same job never overlaps itself even if it runs for days. `next_run_at` is computed from the end of
+the run. If a job is stopped by process shutdown, `next_run_at` stays unchanged and the job resumes
+on restart instead of slipping a whole interval. The account semaphore covers only the upload phase:
+scanning and cleanup run in parallel, and queued jobs show a `waiting` phase.
 
-**Segreti**: `api_hash`, sessioni Telegram e `rclone.conf` sono cifrati con Fernet derivato da
-`APP_SECRET`. Cambiare `APP_SECRET` li rende illeggibili. Il `rclone.conf` torna in chiaro al
-browser solo da `GET /api/rclone/content`, cioe solo premendo Modifica.
+**Durability**: every part is recorded in the database as soon as its message is sent. A crash in the
+middle of a large file leaves no orphan messages: on the next scan the file goes through `stale`, the
+already sent parts are deleted from the channel and the file restarts clean.
 
-## Decisioni verificate, non riaprire senza ricontrollare
+**Secrets**: `api_hash`, Telegram sessions and `rclone.conf` are encrypted with Fernet derived from
+`APP_SECRET`. Changing `APP_SECRET` makes them unreadable. The `rclone.conf` is returned in clear to
+the browser only from `GET /api/rclone/content`, that is only when Edit is pressed.
 
-**Telethon 1.44, non v2** (verificato 2026-07-25). v2 non e mai stato rilasciato: 242 release su
-PyPI, nessuna 2.x. Il branch `v2` dichiara `2.0.0a0`, il default del repo resta `v1`, e l'ultimo
-commit su v2 sostituisce il sender MTProto con un'implementazione Rust. In piu l'upload di v2 non e
-parallelo, quindi non darebbe vantaggi: il parallelismo lo mette `fast_transfer.py` con internals di
-v1 stabili da anni.
+## Settled decisions, do not reopen without rechecking
 
-**cryptg va compilato**: non pubblica wheel musllinux, quindi il Dockerfile ha uno stage builder con
-Rust. Senza cryptg l'AES-IGE gira in Python puro e l'upload diventa CPU-bound.
+**Telethon 1.44, not v2** (checked 2026-07-25). v2 was never released: 242 releases on PyPI, none
+2.x. The `v2` branch declares `2.0.0a0`, the repository default stays `v1`, and the last commit on v2
+replaces the MTProto sender with a Rust implementation. On top of that v2's upload is not parallel,
+so it would bring no benefit: the parallelism comes from `fast_transfer.py` using v1 internals that
+have been stable for years.
 
-**nginx ascolta su 80 e 8081**: l'ingress del tunnel Cloudflare punta a `frontend:8081`, mentre la
-8081 pubblicata sull'host mappa sulla 80 interna.
+**cryptg must be compiled**: it publishes no musllinux wheel, so the Dockerfile has a builder stage
+with Rust. Without cryptg the AES-IGE runs in pure Python and the upload becomes CPU-bound.
 
-**Il build controlla i tipi**: `vite build` traspila senza type check, e cosi era finito in
-produzione un `api.put` mai definito. Ora `build` esegue prima `tsc --noEmit`.
+**nginx listens on 80 and 8081**: the Cloudflare tunnel ingress points at `frontend:8081`, while the
+8081 published on the host maps to the internal 80.
 
-**Migrazione all'avvio**: `create_all` non aggiunge colonne a tabelle esistenti, quindi `migrate.py`
-confronta modelli e schema e fa gli `ALTER TABLE` mancanti.
+**The build type-checks**: `vite build` transpiles without type checking, which is how an `api.put`
+that was never defined reached production. `build` now runs `tsc --noEmit` first.
 
-## Comandi
+**The CSS target is pinned**: without it the minifier rewrites media queries into range syntax, which
+Safari only understands from 16.4, and on an older phone the whole mobile layout would be ignored.
+
+**Schema migration at startup**: `create_all` does not add columns to existing tables, so
+`migrate.py` compares models against the schema and issues the missing `ALTER TABLE`.
+
+## Commands
 
 ```
-cp .env.example .env      # poi compila CLOUDFLARE_TUNNEL_TOKEN e APP_SECRET
+cp .env.example .env      # then fill in CLOUDFLARE_TUNNEL_TOKEN and APP_SECRET
 docker compose up -d --build
 docker compose logs -f backend
-docker compose up -d --no-deps backend    # senza toccare gli altri servizi
+docker compose up -d --no-deps backend    # without touching the other services
 ```
 
-Accesso: `http://127.0.0.1:8081` o l'hostname del tunnel Cloudflare.
-Credenziali iniziali `admin` / `admin`, cambio password obbligatorio al primo accesso.
+Access: `http://127.0.0.1:8081` or the Cloudflare tunnel hostname.
+Initial credentials `admin` / `admin`, password change is mandatory on first sign in.
 
-## Aggiungere una sorgente
+## Adding a source
 
-**Cartella locale**: volume in `docker-compose.yml`, servizio `backend`, come
-`- /percorso/host:/percorso/host:ro`, poi `docker compose up -d --no-deps backend`. Nella UI il path
-del job e quello interno al container.
+**Local folder**: a volume in `docker-compose.yml`, service `backend`, as
+`- /host/path:/host/path:ro`, then `docker compose up -d --no-deps backend`. In the interface the
+job path is the one inside the container.
 
-**Remote rclone**: si incolla il `rclone.conf` in Impostazioni, poi nel job si sceglie Remote rclone
-e si indica `nome-remote:` o `nome-remote:sottocartella`. Il pulsante Sfoglia apre il browser dei
-remote, da cui si copia o si applica direttamente il percorso.
+**rclone remote**: paste the `rclone.conf` in Settings, then in the job pick Rclone remote and give
+`remote-name:` or `remote-name:subfolder`. The Browse button opens the remote browser, from which the
+path can be copied or applied directly.

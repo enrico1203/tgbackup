@@ -20,16 +20,16 @@ import {
 const PAGE_SIZE = 100;
 
 const STATE_LABELS: Record<string, { text: string; tone: "ok" | "warn" | "bad" | "mute" }> = {
-  uploaded: { text: "Su Telegram", tone: "ok" },
-  pending: { text: "In attesa", tone: "warn" },
-  uploading: { text: "In corso", tone: "warn" },
-  stale: { text: "Da ricaricare", tone: "warn" },
-  to_delete: { text: "Da cancellare", tone: "mute" },
-  error: { text: "Errore", tone: "bad" },
+  uploaded: { text: "On Telegram", tone: "ok" },
+  pending: { text: "Pending", tone: "warn" },
+  uploading: { text: "Uploading", tone: "warn" },
+  stale: { text: "To re-upload", tone: "warn" },
+  to_delete: { text: "To delete", tone: "mute" },
+  error: { text: "Error", tone: "bad" },
 };
 
-/** Un messaggio in un canale privato si apre con t.me/c/<id canale>/<id messaggio>,
- *  senza il prefisso -100. E lo stesso id che teniamo in tg_id. */
+/** A message in a private channel opens with t.me/c/<channel id>/<message id>, without the
+ *  -100 prefix. It is the same id kept in tg_id. */
 function messageLink(channelTgId: number, messageId: number): string {
   return `https://t.me/c/${channelTgId}/${messageId}`;
 }
@@ -47,8 +47,8 @@ interface ChannelGroup {
   bytesUploaded: number;
 }
 
-/** I file appartengono a un job, e ogni job scrive su un canale. Per mostrarli per
- *  canale si raggruppano i job che condividono la stessa destinazione. */
+/** Files belong to a job, and every job writes to a channel. To show them per channel, the
+ *  jobs sharing the same destination are grouped together. */
 function groupByChannel(jobs: Job[]): ChannelGroup[] {
   const groups = new Map<number, ChannelGroup>();
   for (const job of jobs) {
@@ -86,7 +86,7 @@ function RestorePanel() {
 
   return (
     <Card>
-      <CardHead title="Restore in corso" />
+      <CardHead title="Restores in progress" />
       <div className="card-body">
         {items.map((restore) => (
           <div key={restore.restore_id} style={{ display: "grid", gap: 8 }}>
@@ -97,10 +97,10 @@ function RestorePanel() {
                 live={restore.phase === "running"}
               >
                 {restore.phase === "done"
-                  ? "Completato"
+                  ? "Completed"
                   : restore.phase === "error"
-                    ? "Errore"
-                    : "In corso"}
+                    ? "Error"
+                    : "Running"}
               </Pill>
             </div>
             <div className="mono truncate" style={{ color: "var(--muted)" }}>
@@ -109,10 +109,10 @@ function RestorePanel() {
             <ProgressBar done={restore.bytes_done} total={restore.bytes_total} />
             <div className="row wrap num" style={{ gap: 20, fontSize: 12.5, color: "var(--muted)" }}>
               <span>
-                {formatBytes(restore.bytes_done)} di {formatBytes(restore.bytes_total)}
+                {formatBytes(restore.bytes_done)} of {formatBytes(restore.bytes_total)}
               </span>
               <span>{formatSpeed(restore.speed_bps)}</span>
-              <span>stimato {formatDuration(restore.eta_seconds)}</span>
+              <span>{formatDuration(restore.eta_seconds)} left</span>
             </div>
             {restore.error ? <Alert>{restore.error}</Alert> : null}
           </div>
@@ -153,15 +153,15 @@ function ChannelPicker({
             </div>
 
             <div className="channel-meta num">
-              {group.filesUploaded.toLocaleString("it-IT")} di{" "}
-              {group.filesTotal.toLocaleString("it-IT")} file, {formatBytes(group.bytesUploaded)}
+              {group.filesUploaded.toLocaleString("en-US")} of{" "}
+              {group.filesTotal.toLocaleString("en-US")} files, {formatBytes(group.bytesUploaded)}
             </div>
 
             <ProgressBar done={group.filesUploaded} total={group.filesTotal} />
 
             <div className="channel-meta">
-              {group.jobNames.join(", ")} su {group.accounts.join(", ")}
-              <span className="num"> — {done.toFixed(done >= 99.5 ? 1 : 0)} per cento</span>
+              {group.jobNames.join(", ")} on {group.accounts.join(", ")}
+              <span className="num"> — {done.toFixed(done >= 99.5 ? 1 : 0)} per cent</span>
             </div>
           </button>
         );
@@ -186,7 +186,7 @@ export default function Files() {
 
   const groups = useMemo(() => groupByChannel(jobs ?? []), [jobs]);
 
-  // Il canale scelto vive nella query string, cosi il link resta condivisibile.
+  // The chosen channel lives in the query string, so the link stays shareable.
   const fromUrl = params.get("channel");
   const selected =
     fromUrl !== null && groups.some((g) => g.channelId === Number(fromUrl))
@@ -228,8 +228,8 @@ export default function Files() {
       <Card>
         <Empty
           icon={<FileStack size={26} color="var(--muted)" />}
-          title="Nessun canale con file"
-          hint="I canali compaiono qui quando un sync job li usa come destinazione."
+          title="No channel with files"
+          hint="Channels show up here when a sync job uses them as a destination."
         />
       </Card>
     );
@@ -240,16 +240,16 @@ export default function Files() {
       <RestorePanel />
 
       <div>
-        <span className="section-label">Canali di destinazione</span>
+        <span className="section-label">Destination channels</span>
         <div style={{ marginTop: 10 }}>
           <ChannelPicker groups={groups} selected={selected} onSelect={selectChannel} />
         </div>
       </div>
 
       <Card>
-        <CardHead title={current ? current.title : "File"}>
+        <CardHead title={current ? current.title : "Files"}>
           <span className="num" style={{ color: "var(--muted)", fontSize: 12.5 }}>
-            {total.toLocaleString("it-IT")} file
+            {total.toLocaleString("en-US")} files
           </span>
         </CardHead>
 
@@ -259,7 +259,7 @@ export default function Files() {
               <Search size={16} color="var(--muted)" />
               <input
                 value={search}
-                placeholder="Cerca per percorso o nome in questo canale"
+                placeholder="Search by path or name in this channel"
                 onChange={(event) => setSearch(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
@@ -278,10 +278,10 @@ export default function Files() {
                 setPage(0);
               }}
             >
-              <option value="">Tutti gli stati</option>
-              <option value="uploaded">Su Telegram</option>
-              <option value="pending">In attesa</option>
-              <option value="error">In errore</option>
+              <option value="">All states</option>
+              <option value="uploaded">On Telegram</option>
+              <option value="pending">Pending</option>
+              <option value="error">In error</option>
             </select>
 
             <button
@@ -292,40 +292,40 @@ export default function Files() {
                 setPage(0);
               }}
             >
-              Cerca
+              Search
             </button>
           </div>
 
           {restore.isError ? <Alert>{(restore.error as Error).message}</Alert> : null}
           {restore.isSuccess ? (
             <Alert tone="info">
-              Restore avviato. Il file ricomposto sara in {restore.data.target_path} dentro il
-              container, cioe nella cartella data del progetto.
+              Restore started. The rebuilt file will be at {restore.data.target_path} inside
+              the container, that is in the project data folder.
             </Alert>
           ) : null}
         </div>
 
         {isLoading ? (
           <div className="card-body row" style={{ color: "var(--muted)" }}>
-            <Spinner /> Caricamento
+            <Spinner /> Loading
           </div>
         ) : !data || data.items.length === 0 ? (
           <Empty
             icon={<FileStack size={26} color="var(--muted)" />}
-            title="Nessun file in questo canale"
-            hint="I file compaiono dopo la prima scansione del sync job che scrive qui."
+            title="No files in this channel"
+            hint="Files show up after the first scan of the sync job writing here."
           />
         ) : (
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Percorso</th>
-                  <th>Stato</th>
-                  <th className="right">Dimensione</th>
-                  <th className="right">Parti</th>
-                  <th>Caricato il</th>
-                  <th className="right">Azioni</th>
+                  <th>Path</th>
+                  <th>State</th>
+                  <th className="right">Size</th>
+                  <th className="right">Parts</th>
+                  <th>Uploaded on</th>
+                  <th className="right">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -377,26 +377,25 @@ export default function Files() {
                           <td colSpan={6} style={{ background: "var(--ground)" }}>
                             <span className="section-label">
                               {entry.parts.length === 1
-                                ? "Messaggio su Telegram"
-                                : `${entry.parts.length} parti su Telegram, in ordine`}
+                                ? "Message on Telegram"
+                                : `${entry.parts.length} parts on Telegram, in order`}
                             </span>
                             <div className="row wrap mono" style={{ gap: 14, marginTop: 8 }}>
                               {entry.parts.map((part) => {
                                 const label = (
                                   <>
                                     {entry.parts.length > 1
-                                      ? `parte ${part.part_index + 1}: `
+                                      ? `part ${part.part_index + 1}: `
                                       : ""}
-                                    messaggio {part.message_id}
+                                    message {part.message_id}
                                     <span style={{ color: "var(--muted)" }}>
                                       {" "}
                                       {formatBytes(part.size)}
                                     </span>
                                   </>
                                 );
-                                // Senza l'id del canale il link sarebbe rotto: meglio
-                                // il solo testo che un collegamento che non porta da
-                                // nessuna parte.
+                                // Without the channel id the link would be broken: plain
+                                // text beats a link that leads nowhere.
                                 if (!current?.channelTgId) {
                                   return (
                                     <span
@@ -441,10 +440,10 @@ export default function Files() {
               disabled={page === 0}
               onClick={() => setPage((current) => current - 1)}
             >
-              Precedente
+              Previous
             </button>
             <span className="num" style={{ color: "var(--muted)" }}>
-              pagina {page + 1} di {pages}
+              page {page + 1} of {pages}
             </span>
             <button
               type="button"
@@ -452,7 +451,7 @@ export default function Files() {
               disabled={page + 1 >= pages}
               onClick={() => setPage((current) => current + 1)}
             >
-              Successiva
+              Next
             </button>
           </div>
         ) : null}

@@ -18,7 +18,7 @@ export default function Login() {
     try {
       await login(username.trim(), password);
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : "Accesso non riuscito");
+      setError(exc instanceof Error ? exc.message : "Sign in failed");
     } finally {
       setBusy(false);
     }
@@ -32,12 +32,12 @@ export default function Login() {
             <CloudUpload size={26} />
           </div>
           <h1>tgbackup</h1>
-          <p>Accedi per gestire i backup delle tue cartelle su Telegram.</p>
+          <p>Sign in to manage the backups of your folders on Telegram.</p>
         </div>
 
         {error ? <Alert>{error}</Alert> : null}
 
-        <Field label="Nome utente">
+        <Field label="Username">
           <input
             value={username}
             onChange={(event) => setUsername(event.target.value)}
@@ -59,7 +59,7 @@ export default function Login() {
 
         <button className="btn" type="submit" disabled={busy || !username || !password}>
           {busy ? <Spinner /> : null}
-          {busy ? "Accesso in corso" : "Accedi"}
+          {busy ? "Signing in" : "Sign in"}
         </button>
       </form>
     </div>

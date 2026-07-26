@@ -1,7 +1,7 @@
 from collections.abc import AsyncIterator
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy import event
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from .config import settings
 
@@ -17,7 +17,7 @@ engine = create_async_engine(
 
 @event.listens_for(engine.sync_engine, "connect")
 def _sqlite_pragmas(dbapi_connection, _record):
-    # WAL serve perche lo scheduler scrive mentre la UI legge.
+    # WAL is needed because the scheduler writes while the interface reads.
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("PRAGMA synchronous=NORMAL")

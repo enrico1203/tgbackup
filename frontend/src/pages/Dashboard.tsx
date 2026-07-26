@@ -24,32 +24,32 @@ export default function Dashboard() {
     <>
       <div className="stat-grid">
         <Stat
-          label="Velocita complessiva"
+          label="Overall speed"
           value={formatSpeed(totalSpeed)}
-          hint={active.length ? `${active.length} job in esecuzione` : "nessun job attivo"}
+          hint={active.length ? `${active.length} jobs running` : "no active jobs"}
         />
         <Stat
-          label="File salvati"
-          value={(data?.files_uploaded ?? 0).toLocaleString("it-IT")}
-          hint={`su ${(data?.files_total ?? 0).toLocaleString("it-IT")} tracciati`}
+          label="Files saved"
+          value={(data?.files_uploaded ?? 0).toLocaleString("en-US")}
+          hint={`of ${(data?.files_total ?? 0).toLocaleString("en-US")} tracked`}
         />
         <Stat
-          label="Dati su Telegram"
+          label="Data on Telegram"
           value={formatBytes(data?.bytes_uploaded ?? 0)}
-          hint={`${percent(data?.bytes_uploaded ?? 0, data?.bytes_total ?? 0).toFixed(1)} per cento del totale`}
+          hint={`${percent(data?.bytes_uploaded ?? 0, data?.bytes_total ?? 0).toFixed(1)} per cent of the total`}
         />
         <Stat
-          label="Account collegati"
+          label="Linked accounts"
           value={`${data?.accounts_connected ?? 0} / ${data?.accounts ?? 0}`}
-          hint={data?.files_error ? `${data.files_error} file in errore` : "nessun errore"}
+          hint={data?.files_error ? `${data.files_error} files in error` : "no errors"}
         />
       </div>
 
       <Card>
-        <CardHead title="Job in esecuzione">
+        <CardHead title="Running jobs">
           {active.length > 0 ? (
             <Pill tone="ok" live>
-              {active.length} attivi
+              {active.length} active
             </Pill>
           ) : null}
         </CardHead>
@@ -57,8 +57,8 @@ export default function Dashboard() {
         {active.length === 0 ? (
           <Empty
             icon={<Activity size={26} color="var(--muted)" />}
-            title="Nessun job in esecuzione"
-            hint="Quando un sync job parte, qui compaiono velocita di upload, file rimanenti e tempo stimato in tempo reale."
+            title="No jobs running"
+            hint="When a sync job starts, upload speed, remaining files and estimated time show up here live."
           />
         ) : (
           <div className="card-body">
@@ -90,25 +90,25 @@ export default function Dashboard() {
       </Card>
 
       <Card>
-        <CardHead title="Ultime esecuzioni" />
+        <CardHead title="Latest runs" />
         {!data || data.recent_runs.length === 0 ? (
           <Empty
             icon={<CloudUpload size={26} color="var(--muted)" />}
-            title="Ancora nessuna esecuzione"
-            hint="Crea un sync job e avvialo per vedere qui il registro delle corse."
+            title="No runs yet"
+            hint="Create a sync job and start it to see the run log here."
           />
         ) : (
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Avvio</th>
-                  <th>Esito</th>
-                  <th className="right">Esaminati</th>
-                  <th className="right">Nuovi</th>
-                  <th className="right">Modificati</th>
-                  <th className="right">Rimossi</th>
-                  <th className="right">Caricati</th>
+                  <th>Started</th>
+                  <th>Outcome</th>
+                  <th className="right">Examined</th>
+                  <th className="right">New</th>
+                  <th className="right">Modified</th>
+                  <th className="right">Removed</th>
+                  <th className="right">Uploaded</th>
                 </tr>
               </thead>
               <tbody>
@@ -129,18 +129,18 @@ export default function Dashboard() {
                         live={run.status === "running"}
                       >
                         {run.status === "ok"
-                          ? "Completato"
+                          ? "Completed"
                           : run.status === "error"
-                            ? "Errore"
+                            ? "Error"
                             : run.status === "running"
-                              ? "In corso"
-                              : "Interrotto"}
+                              ? "Running"
+                              : "Interrupted"}
                       </Pill>
                     </td>
-                    <td className="right num">{run.scanned.toLocaleString("it-IT")}</td>
-                    <td className="right num">{run.added.toLocaleString("it-IT")}</td>
-                    <td className="right num">{run.modified.toLocaleString("it-IT")}</td>
-                    <td className="right num">{run.removed.toLocaleString("it-IT")}</td>
+                    <td className="right num">{run.scanned.toLocaleString("en-US")}</td>
+                    <td className="right num">{run.added.toLocaleString("en-US")}</td>
+                    <td className="right num">{run.modified.toLocaleString("en-US")}</td>
+                    <td className="right num">{run.removed.toLocaleString("en-US")}</td>
                     <td className="right num">{formatBytes(run.uploaded_bytes)}</td>
                   </tr>
                 ))}
@@ -152,30 +152,30 @@ export default function Dashboard() {
 
       <div className="stat-grid">
         <Stat
-          label="Sync job configurati"
+          label="Sync jobs configured"
           value={data?.jobs ?? 0}
-          hint={<Link to="/jobs">Gestisci i job</Link>}
+          hint={<Link to="/jobs">Manage the jobs</Link>}
         />
         <Stat
-          label="File in attesa"
-          value={(data?.files_pending ?? 0).toLocaleString("it-IT")}
-          hint="da caricare alla prossima corsa"
+          label="Files pending"
+          value={(data?.files_pending ?? 0).toLocaleString("en-US")}
+          hint="to upload on the next run"
         />
         <Stat
-          label="Spazio totale tracciato"
+          label="Total tracked size"
           value={formatBytes(data?.bytes_total ?? 0)}
           hint={
             <span className="row" style={{ gap: 6 }}>
-              <HardDrive size={12} /> cartelle locali sorvegliate
+              <HardDrive size={12} /> sources being watched
             </span>
           }
         />
         <Stat
-          label="Account Telegram"
+          label="Telegram accounts"
           value={data?.accounts ?? 0}
           hint={
             <span className="row" style={{ gap: 6 }}>
-              <Users size={12} /> <Link to="/accounts">Collega un account</Link>
+              <Users size={12} /> <Link to="/accounts">Link an account</Link>
             </span>
           }
         />

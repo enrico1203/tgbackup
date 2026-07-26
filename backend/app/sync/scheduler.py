@@ -1,8 +1,8 @@
-"""Supervisore dei sync job.
+"""Supervisor for the sync jobs.
 
-Lo stato `running` sta nel database, non in memoria: lo stesso job non puo mai partire
-due volte in parallelo neanche se la sua esecuzione dura giorni, e un riavvio del
-processo non lascia job fantasma bloccati.
+The `running` state lives in the database, not in memory: the same job can never start
+twice in parallel even when its execution lasts days, and a process restart leaves no
+ghost jobs stuck.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ class Scheduler:
         self._loop_task: asyncio.Task | None = None
 
     async def reset_stale(self) -> None:
-        """Riporta a idle i job rimasti running da un arresto brusco del processo."""
+        """Brings back to idle the jobs left running by an abrupt process stop."""
         async with SessionLocal() as session:
             await session.execute(
                 update(SyncJob).where(SyncJob.status == "running").values(status="idle", phase=None)
@@ -46,7 +46,7 @@ class Scheduler:
         return task is not None and not task.done()
 
     async def trigger(self, job_id: int) -> bool:
-        """Avvia subito un job. Ritorna False se era gia in esecuzione."""
+        """Starts a job right away. Returns False if it was already running."""
         if self.is_running(job_id):
             return False
 
@@ -99,7 +99,7 @@ class Scheduler:
         for job_id in due:
             if self.is_running(job_id):
                 continue
-            log.info("Avvio del job %d", job_id)
+            log.info("Starting job %d", job_id)
             await self.trigger(job_id)
 
     async def _loop(self) -> None:
@@ -107,7 +107,7 @@ class Scheduler:
             try:
                 await self._tick()
             except Exception:
-                log.exception("Errore nel giro dello scheduler")
+                log.exception("Error in the scheduler tick")
             await asyncio.sleep(settings.scheduler_tick_seconds)
 
     async def start(self) -> None:
@@ -122,12 +122,12 @@ class Scheduler:
             self._loop_task = None
 
         for cancel in self._cancels.values():
-            # Motivo esplicito: cosi i job fermati dallo spegnimento non si spostano
-            # avanti di un intervallo intero e al riavvio riprendono subito.
+            # Explicit reason: jobs stopped by shutdown are not pushed forward by a whole
+            # interval and resume right away on restart.
             cancel.set("shutdown")
         tasks = list(self._tasks.values())
         if tasks:
-            # I job in corso vengono avvisati e si fermano al prossimo punto di controllo.
+            # Running jobs are notified and stop at their next checkpoint.
             await asyncio.gather(*tasks, return_exceptions=True)
 
 

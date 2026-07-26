@@ -9,7 +9,7 @@ import { Alert, Modal, Spinner } from "./ui";
 
 const PAGE_LIMIT = 20;
 
-/** Compone il percorso nella forma che si incolla nel campo del job. */
+/** Builds the path in the form that gets pasted into the job field. */
 function joinRemote(base: string, segments: string[]): string {
   const root = base.endsWith(":") ? base : `${base}:`;
   return segments.length ? `${root}${segments.join("/")}` : root;
@@ -41,7 +41,7 @@ export default function RemoteBrowser({
     try {
       await navigator.clipboard.writeText(fullPath);
     } catch {
-      // Senza permesso per gli appunti resta la selezione manuale del campo.
+      // Without clipboard permission, selecting the field by hand still works.
       return;
     }
     setCopied(true);
@@ -50,16 +50,16 @@ export default function RemoteBrowser({
 
   return (
     <Modal
-      title={`Contenuto di ${remote}`}
+      title={`Contents of ${remote}`}
       onClose={onClose}
       footer={
         <>
           <button type="button" className="btn ghost" onClick={onClose}>
-            Chiudi
+            Close
           </button>
           {onPick ? (
             <button type="button" className="btn" onClick={() => onPick(fullPath)}>
-              Usa questo percorso
+              Use this path
             </button>
           ) : null}
         </>
@@ -72,10 +72,10 @@ export default function RemoteBrowser({
           type="button"
           className="btn ghost small"
           onClick={copy}
-          title="Copia il percorso"
+          title="Copy the path"
         >
           {copied ? <Check size={13} /> : <Copy size={13} />}
-          {copied ? "Copiato" : "Copia"}
+          {copied ? "Copied" : "Copy"}
         </button>
       </div>
 
@@ -105,11 +105,11 @@ export default function RemoteBrowser({
 
       {isFetching ? (
         <div className="row" style={{ color: "var(--muted)" }}>
-          <Spinner /> Lettura del remote
+          <Spinner /> Reading the remote
         </div>
       ) : !data || data.entries.length === 0 ? (
         <div style={{ color: "var(--muted)", padding: "20px 0", textAlign: "center" }}>
-          {data?.error ? "Impossibile leggere questa cartella" : "Cartella vuota"}
+          {data?.error ? "This folder cannot be read" : "Empty folder"}
         </div>
       ) : (
         <div className="browser">
@@ -120,7 +120,7 @@ export default function RemoteBrowser({
               onClick={() => setSegments(segments.slice(0, -1))}
             >
               <ArrowLeft size={15} style={{ color: "var(--muted)" }} />
-              <span style={{ color: "var(--muted)" }}>Cartella superiore</span>
+              <span style={{ color: "var(--muted)" }}>Parent folder</span>
             </button>
           ) : null}
 
@@ -134,7 +134,7 @@ export default function RemoteBrowser({
                 )}
                 <span className="browser-name">{entry.name}</span>
                 <span className="browser-size num">
-                  {entry.is_dir ? "cartella" : formatBytes(entry.size)}
+                  {entry.is_dir ? "folder" : formatBytes(entry.size)}
                 </span>
               </>
             );
@@ -162,8 +162,8 @@ export default function RemoteBrowser({
 
       {data?.truncated ? (
         <span style={{ fontSize: 12, color: "var(--muted)" }}>
-          Mostrate le prime {PAGE_LIMIT} voci, la cartella ne contiene altre. Il sync job
-          le prende comunque tutte.
+          Showing the first {PAGE_LIMIT} entries, the folder holds more. The sync job takes
+          them all anyway.
         </span>
       ) : null}
     </Modal>

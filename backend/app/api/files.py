@@ -25,7 +25,7 @@ async def list_files(
     if job_id is not None:
         filters.append(FileEntry.job_id == job_id)
     if channel_id is not None:
-        # Un canale puo essere la destinazione di piu job: si filtra passando per loro.
+        # A channel can be the destination of several jobs: filter through them.
         filters.append(
             FileEntry.job_id.in_(
                 select(SyncJob.id).where(SyncJob.channel_id == channel_id)
@@ -55,7 +55,7 @@ async def get_file(file_id: int, session: SessionDep, _: ActiveUserDep) -> FileE
     )
     entry = result.scalar_one_or_none()
     if entry is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "File non trovato")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found")
     return entry
 
 

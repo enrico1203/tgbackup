@@ -1,11 +1,11 @@
-"""Adeguamento dello schema all'avvio.
+"""Schema alignment at startup.
 
-`create_all` crea le tabelle mancanti ma non aggiunge colonne a tabelle che esistono
-gia. Qui si confrontano le colonne dichiarate nei modelli con quelle presenti nel
-database e si aggiungono quelle mancanti con un ALTER TABLE.
+`create_all` creates missing tables but does not add columns to tables that already
+exist. Here the columns declared in the models are compared with the ones present in
+the database, and the missing ones are added with an ALTER TABLE.
 
-Su SQLite ALTER TABLE ADD COLUMN e istantaneo e non riscrive la tabella, quindi non
-serve nulla di piu strutturato per un database di un singolo utente.
+On SQLite, ALTER TABLE ADD COLUMN is instant and does not rewrite the table, so nothing
+more elaborate is needed for a single user database.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 
 
 def _default_clause(column) -> str:
-    """SQLite pretende un default costante per le colonne aggiunte a tabelle piene."""
+    """SQLite requires a constant default for columns added to non-empty tables."""
     default = column.default
     if default is not None and default.is_scalar:
         value = default.arg
@@ -33,9 +33,10 @@ def _default_clause(column) -> str:
             escaped = value.replace("'", "''")
             return f" DEFAULT '{escaped}'"
     if not column.nullable:
-        # Senza default una colonna NOT NULL non e aggiungibile: si ripiega su un
-        # valore vuoto coerente col tipo.
-        return " DEFAULT ''" if "CHAR" in str(column.type).upper() or "TEXT" in str(column.type).upper() else " DEFAULT 0"
+        # Without a default a NOT NULL column cannot be added: fall back to an empty
+        # value consistent with the type.
+        kind = str(column.type).upper()
+        return " DEFAULT ''" if "CHAR" in kind or "TEXT" in kind else " DEFAULT 0"
     return ""
 
 
@@ -44,7 +45,7 @@ async def ensure_schema(connection: AsyncConnection) -> None:
         result = await connection.execute(text(f"PRAGMA table_info('{table.name}')"))
         existing = {row[1] for row in result}
         if not existing:
-            # Tabella nuova: ci pensa create_all.
+            # Brand new table: create_all will take care of it.
             continue
 
         for column in table.columns:
@@ -55,4 +56,4 @@ async def ensure_schema(connection: AsyncConnection) -> None:
                 f"{column.type.compile(connection.dialect)}{_default_clause(column)}"
             )
             await connection.execute(text(ddl))
-            log.info("Schema aggiornato: %s.%s", table.name, column.name)
+            log.info("Schema updated: %s.%s", table.name, column.name)

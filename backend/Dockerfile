@@ -1,5 +1,5 @@
-# cryptg non pubblica wheel musllinux: su Alpine va compilato con Rust.
-# Senza cryptg l'AES-IGE di Telethon gira in Python puro e l'upload diventa CPU-bound.
+# cryptg publishes no musllinux wheel: on Alpine it has to be compiled with Rust.
+# Without cryptg, Telethon's AES-IGE runs in pure Python and the upload becomes CPU-bound.
 FROM python:3.14.6-alpine AS builder
 
 RUN apk add --no-cache build-base musl-dev libffi-dev openssl-dev rust cargo
@@ -9,9 +9,9 @@ COPY requirements.txt .
 RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
 
 
-# rclone serve a leggere direttamente dai remote, senza mount: lsjson per elencare
-# e cat --offset --count per le fette di byte. Si prende il binario statico ufficiale
-# invece del pacchetto Alpine, che resta indietro di qualche versione.
+# rclone reads remotes directly, with no mount: lsjson to list and cat --offset --count
+# for byte ranges. The official static binary is used instead of the Alpine package,
+# which lags a few versions behind.
 FROM alpine:3.24 AS rclone
 
 ARG RCLONE_VERSION=1.74.4
@@ -42,6 +42,6 @@ ENV PYTHONUNBUFFERED=1 \
 
 EXPOSE 8000
 
-# Un solo worker: lo scheduler, il registry dei client Telegram e il registry di
-# progresso vivono in memoria di processo e non vanno replicati.
+# A single worker: the scheduler, the Telegram client registry and the progress registry
+# live in process memory and must not be replicated.
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--no-access-log"]

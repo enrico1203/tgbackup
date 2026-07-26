@@ -60,7 +60,7 @@ async def list_jobs(session: SessionDep, _: ActiveUserDep) -> list[JobOut]:
 async def get_job(job_id: int, session: SessionDep, _: ActiveUserDep) -> JobOut:
     job = await session.get(SyncJob, job_id)
     if job is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job non trovato")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
     return await _to_out(session, job)
 
 
@@ -74,35 +74,35 @@ async def _validate(
 ) -> Channel:
     account = await session.get(TelegramAccount, account_id)
     if account is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Account Telegram non trovato")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Telegram account not found")
 
     channel = await session.get(Channel, channel_id)
     if channel is None or channel.account_id != account_id:
         raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, "Il canale non appartiene a questo account"
+            status.HTTP_400_BAD_REQUEST, "The channel does not belong to this account"
         )
 
     if source_type == "rclone":
         if not remote:
             raise HTTPException(
-                status.HTTP_400_BAD_REQUEST, "Indica il remote rclone da sincronizzare"
+                status.HTTP_400_BAD_REQUEST, "Give the rclone remote to synchronise"
             )
         try:
             await rclone.check_remote(remote)
         except rclone.RcloneError as exc:
             raise HTTPException(
-                status.HTTP_400_BAD_REQUEST, f"Il remote {remote} non risponde: {exc}"
+                status.HTTP_400_BAD_REQUEST, f"Remote {remote} does not answer: {exc}"
             ) from exc
     else:
         if not local_path:
             raise HTTPException(
-                status.HTTP_400_BAD_REQUEST, "Indica la cartella locale da sincronizzare"
+                status.HTTP_400_BAD_REQUEST, "Give the local folder to synchronise"
             )
         if not os.path.isdir(local_path):
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
-                f"La cartella {local_path} non esiste dentro il container. "
-                "Aggiungila come volume nel docker-compose.yml e riavvia il backend.",
+                f"Folder {local_path} does not exist inside the container. "
+                "Add it as a volume in docker-compose.yml and restart the backend.",
             )
     return channel
 
@@ -143,10 +143,10 @@ async def update_job(
 ) -> JobOut:
     job = await session.get(SyncJob, job_id)
     if job is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job non trovato")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
     if job.status == "running":
         raise HTTPException(
-            status.HTTP_409_CONFLICT, "Il job e in esecuzione, fermalo prima di modificarlo"
+            status.HTTP_409_CONFLICT, "The job is running, stop it before editing it"
         )
 
     data = payload.model_dump(exclude_unset=True)
@@ -171,10 +171,10 @@ async def update_job(
 async def delete_job(job_id: int, session: SessionDep, _: ActiveUserDep) -> None:
     job = await session.get(SyncJob, job_id)
     if job is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job non trovato")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
     if scheduler.is_running(job_id):
         raise HTTPException(
-            status.HTTP_409_CONFLICT, "Il job e in esecuzione, fermalo prima di eliminarlo"
+            status.HTTP_409_CONFLICT, "The job is running, stop it before deleting it"
         )
     await session.delete(job)
     await session.commit()
@@ -184,9 +184,9 @@ async def delete_job(job_id: int, session: SessionDep, _: ActiveUserDep) -> None
 async def run_job(job_id: int, session: SessionDep, _: ActiveUserDep) -> JobOut:
     job = await session.get(SyncJob, job_id)
     if job is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job non trovato")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
     if not await scheduler.trigger(job_id):
-        raise HTTPException(status.HTTP_409_CONFLICT, "Il job e gia in esecuzione")
+        raise HTTPException(status.HTTP_409_CONFLICT, "The job is already running")
     await session.refresh(job)
     return await _to_out(session, job)
 
@@ -195,9 +195,9 @@ async def run_job(job_id: int, session: SessionDep, _: ActiveUserDep) -> JobOut:
 async def stop_job(job_id: int, session: SessionDep, _: ActiveUserDep) -> JobOut:
     job = await session.get(SyncJob, job_id)
     if job is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job non trovato")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
     if not await scheduler.stop(job_id):
-        raise HTTPException(status.HTTP_409_CONFLICT, "Il job non e in esecuzione")
+        raise HTTPException(status.HTTP_409_CONFLICT, "The job is not running")
     return await _to_out(session, job)
 
 

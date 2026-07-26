@@ -29,10 +29,10 @@ async def load_config(session) -> str | None:
 
 
 async def sync_config_to_disk(session) -> None:
-    """Riporta su disco la configurazione salvata nel database.
+    """Writes back to disk the configuration stored in the database.
 
-    Il database e la fonte di verita: il file su disco esiste solo perche rclone
-    vuole un file, e viene riscritto a ogni avvio.
+    The database is the source of truth: the file on disk exists only because rclone wants
+    a file, and it is rewritten at every start.
     """
     content = await load_config(session)
     if content:
@@ -49,7 +49,7 @@ async def status_(session: SessionDep, _: ActiveUserDep) -> RcloneStatusOut:
     try:
         version = await rclone.version()
     except Exception as exc:
-        version = f"non disponibile: {exc}"
+        version = f"not available: {exc}"
 
     remotes: list[str] = []
     error: str | None = None
@@ -63,8 +63,8 @@ async def status_(session: SessionDep, _: ActiveUserDep) -> RcloneStatusOut:
         configured=bool(content),
         version=version,
         remotes=remotes,
-        # La configurazione contiene le credenziali dei cloud: non torna mai al
-        # browser, si mostrano solo i nomi delle sezioni e le dimensioni.
+        # The configuration holds the cloud credentials: it never goes back to the
+        # browser, only the remote names and sizes are shown.
         config_lines=len(content.splitlines()) if content else 0,
         updated_at=row.updated_at if row else None,
         error=error,
@@ -73,15 +73,14 @@ async def status_(session: SessionDep, _: ActiveUserDep) -> RcloneStatusOut:
 
 @router.get("/content", response_model=RcloneContentOut)
 async def read_config(session: SessionDep, _: ActiveUserDep) -> RcloneContentOut:
-    """Restituisce la configurazione in chiaro, per poterla modificare.
+    """Returns the configuration in clear, so it can be edited.
 
-    Deliberatamente separato da GET /api/rclone: lo stato viene letto a ogni
-    caricamento della pagina, mentre le credenziali escono solo quando l'utente
-    chiede esplicitamente di modificarle.
+    Deliberately separate from GET /api/rclone: the status is read on every page load,
+    while the credentials only leave when the user explicitly asks to edit them.
     """
     content = await load_config(session)
     if content is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Nessuna configurazione salvata")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No configuration stored")
     return RcloneContentOut(content=content)
 
 
@@ -89,16 +88,16 @@ async def read_config(session: SessionDep, _: ActiveUserDep) -> RcloneContentOut
 async def save_config(
     payload: RcloneConfigIn, session: SessionDep, user: ActiveUserDep
 ) -> RcloneStatusOut:
-    # Si valida sul testo ripulito ma si salva quello originale: cosi rileggere per
-    # modificare restituisce esattamente il file che l'utente aveva scritto.
+    # Validation runs on the trimmed text but the original is stored: reading it back to
+    # edit then returns exactly the file the user wrote.
     content = payload.content
     stripped = content.strip()
     if not stripped:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "La configurazione e vuota")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "The configuration is empty")
     if "[" not in stripped:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            "Non sembra un file rclone.conf: manca una sezione fra parentesi quadre",
+            "This does not look like an rclone.conf: no section in square brackets",
         )
 
     row = await session.scalar(select(Setting).where(Setting.key == SETTING_KEY))
@@ -117,7 +116,7 @@ async def save_config(
         remotes = await rclone.list_remotes()
     except rclone.RcloneError as exc:
         raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, f"rclone rifiuta questa configurazione: {exc}"
+            status.HTTP_400_BAD_REQUEST, f"rclone rejects this configuration: {exc}"
         ) from exc
 
     return await status_(session, user)
@@ -147,14 +146,14 @@ async def preview_remote(
 ) -> RemotePreviewOut:
     limit = max(1, min(limit, 200))
     try:
-        # Si chiede una voce in piu del necessario per sapere se ce n'erano altre.
+        # One entry more than needed is requested, to know whether there were others.
         entries = await rclone.preview(remote, limit + 1)
     except rclone.RcloneError as exc:
         return RemotePreviewOut(remote=remote, entries=[], truncated=False, error=str(exc))
 
     return RemotePreviewOut(
         remote=remote,
-        # Le dataclass con slots non hanno __dict__, quindi niente vars().
+        # Dataclasses with slots have no __dict__, so vars() is not an option.
         entries=[RemoteEntryOut(**asdict(e)) for e in entries[:limit]],
         truncated=len(entries) > limit,
     )

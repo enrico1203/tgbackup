@@ -15,7 +15,7 @@ async def login(payload: LoginIn, session: SessionDep) -> TokenOut:
     result = await session.execute(select(User).where(User.username == payload.username))
     user = result.scalar_one_or_none()
     if user is None or not verify_password(payload.password, user.password_hash):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Utente o password errati")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Wrong username or password")
 
     return TokenOut(
         token=create_token(user.id),
@@ -34,10 +34,10 @@ async def change_password(
     payload: ChangePasswordIn, user: UserDep, session: SessionDep
 ) -> User:
     if not verify_password(payload.current_password, user.password_hash):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "La password attuale non e corretta")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "The current password is not correct")
     if payload.new_password == payload.current_password:
         raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, "La nuova password deve essere diversa dalla attuale"
+            status.HTTP_400_BAD_REQUEST, "The new password must differ from the current one"
         )
 
     user.password_hash = hash_password(payload.new_password)

@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import jwt
 from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError, VerificationError, InvalidHashError
+from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from cryptography.fernet import Fernet, InvalidToken
 
 from .config import settings
@@ -24,8 +24,9 @@ def verify_password(password: str, hashed: str) -> bool:
 
 
 def _fernet() -> Fernet:
-    # La chiave Fernet deriva da APP_SECRET: cambiare APP_SECRET rende illeggibili
-    # le sessioni Telegram salvate, che vanno rifatte.
+    # The Fernet key derives from APP_SECRET: changing APP_SECRET makes the stored
+    # Telegram sessions and rclone configuration unreadable, and they have to be
+    # entered again.
     digest = hashlib.sha256(settings.app_secret.encode()).digest()
     return Fernet(base64.urlsafe_b64encode(digest))
 
@@ -39,7 +40,7 @@ def decrypt(value: str) -> str:
         return _fernet().decrypt(value.encode()).decode()
     except InvalidToken as exc:
         raise ValueError(
-            "Dato cifrato non leggibile: APP_SECRET e cambiato rispetto a quando e stato salvato"
+            "Encrypted value cannot be read: APP_SECRET changed since it was stored"
         ) from exc
 
 

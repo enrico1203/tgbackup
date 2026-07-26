@@ -14,8 +14,8 @@ router = APIRouter()
 
 @router.websocket("/ws/progress")
 async def progress_socket(websocket: WebSocket, token: str = "") -> None:
-    # Gli header Authorization non sono impostabili su una WebSocket dal browser,
-    # quindi il token viaggia in query string.
+    # Authorization headers cannot be set on a WebSocket from the browser, so the token
+    # travels in the query string.
     user_id = decode_token(token)
     if user_id is None:
         await websocket.close(code=4401)

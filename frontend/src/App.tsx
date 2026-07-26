@@ -26,8 +26,8 @@ export default function App() {
 
   if (!user) return <Login />;
 
-  // Finche la password iniziale non e stata cambiata il backend rifiuta ogni altra
-  // rotta, quindi l'interfaccia non mostra nemmeno il resto dell'applicazione.
+  // Until the initial password has been changed the backend rejects every other route,
+  // so the interface does not even show the rest of the application.
   if (user.must_change_password) return <ChangePassword />;
 
   return (

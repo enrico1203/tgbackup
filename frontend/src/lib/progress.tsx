@@ -61,8 +61,8 @@ export function ProgressProvider({ children }: { children: ReactNode }) {
 
       socket.onclose = () => {
         setConnected(false);
-        // Il tunnel o un riavvio del backend chiudono la socket: si riprova senza
-        // martellare, tanto l'interfaccia resta utilizzabile con i dati REST.
+        // The tunnel or a backend restart close the socket: retry without hammering,
+        // the interface stays usable with the REST data anyway.
         if (!closed) retry = window.setTimeout(connect, 3000);
       };
 

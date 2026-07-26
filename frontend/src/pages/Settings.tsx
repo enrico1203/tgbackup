@@ -8,14 +8,14 @@ import type { RcloneStatus } from "../lib/types";
 import RemoteBrowser from "../components/RemoteBrowser";
 import { Alert, Card, CardHead, Field, Pill, Spinner } from "../components/ui";
 
-const PLACEHOLDER = `[miocloud]
+const PLACEHOLDER = `[mycloud]
 type = drive
 client_id = ...
 token = {"access_token":"..."}
 
-[miocloud-crypt]
+[mycloud-crypt]
 type = crypt
-remote = miocloud:cartella
+remote = mycloud:folder
 password = ...`;
 
 export default function Settings() {
@@ -23,9 +23,9 @@ export default function Settings() {
   const [content, setContent] = useState("");
   const [editing, setEditing] = useState(false);
   const [browsing, setBrowsing] = useState<string | null>(null);
-  // Distingue "sto correggendo quella esistente" da "sto scrivendone una nuova":
-  // cambia solo il testo dei pulsanti, ma evita di far credere che si stia
-  // modificando quando invece si sta per sostituire tutto.
+  // Tells "I am fixing the existing one" apart from "I am writing a new one": it only
+  // changes the button text, but it avoids suggesting an edit when everything is about to
+  // be replaced.
   const [mode, setMode] = useState<"edit" | "replace">("edit");
 
   const { data, isLoading } = useQuery({
@@ -37,7 +37,7 @@ export default function Settings() {
     mutationFn: () => api.put<RcloneStatus>("/api/rclone", { content }),
     onSuccess: (status) => {
       queryClient.setQueryData(["rclone"], status);
-      // I remote possono essere cambiati: il form del job li rilegge.
+      // The remotes may have changed: the job form reloads them.
       void queryClient.invalidateQueries({ queryKey: ["rclone"] });
       setContent("");
       setEditing(false);
@@ -49,7 +49,7 @@ export default function Settings() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["rclone"] }),
   });
 
-  // La configurazione in chiaro si chiede solo qui, non al caricamento della pagina.
+  // The configuration in clear is only requested here, not on page load.
   const load = useMutation({
     mutationFn: () => api.get<{ content: string }>("/api/rclone/content"),
     onSuccess: (result) => {
@@ -73,27 +73,27 @@ export default function Settings() {
   return (
     <>
       <Card>
-        <CardHead title="Remote rclone">
+        <CardHead title="Rclone remotes">
           {data?.configured ? (
             <Pill tone="ok">
               <CheckCircle2 size={11} />
               {data.remotes.length} remote
             </Pill>
           ) : (
-            <Pill tone="mute">Non configurato</Pill>
+            <Pill tone="mute">Not configured</Pill>
           )}
         </CardHead>
 
         <div className="card-body">
           <p style={{ margin: 0, color: "var(--muted)", maxWidth: "70ch" }}>
-            Incollando qui il tuo <span className="mono">rclone.conf</span> puoi usare un
-            remote come sorgente di un sync job, senza montarlo. I file vengono elencati via
-            API e letti a intervalli di byte: niente mount, niente copie su disco.
+            Pasting your <span className="mono">rclone.conf</span> here lets you use a remote
+            as the source of a sync job, without mounting it. Files are listed through the API
+            and read in byte ranges: no mount, no copies on disk.
           </p>
 
           {isLoading ? (
             <div className="row" style={{ color: "var(--muted)" }}>
-              <Spinner /> Caricamento
+              <Spinner /> Loading
             </div>
           ) : (
             <>
@@ -104,10 +104,10 @@ export default function Settings() {
                 {data?.configured ? (
                   <>
                     <span style={{ color: "var(--muted)" }} className="num">
-                      {data.config_lines} righe di configurazione
+                      {data.config_lines} configuration lines
                     </span>
                     <span style={{ color: "var(--muted)" }}>
-                      aggiornata {formatDateTime(data.updated_at)}
+                      updated {formatDateTime(data.updated_at)}
                     </span>
                   </>
                 ) : null}
@@ -119,7 +119,7 @@ export default function Settings() {
               {data?.configured && data.remotes.length > 0 ? (
                 <div>
                   <span className="section-label">
-                    Remote disponibili, premi per vedere cosa contengono
+                    Available remotes, press one to see what it holds
                   </span>
                   <div className="row wrap" style={{ gap: 8, marginTop: 8 }}>
                     {data.remotes.map((remote) => (
@@ -142,13 +142,13 @@ export default function Settings() {
                   <Field
                     label={
                       mode === "edit" && data?.configured
-                        ? "Modifica rclone.conf"
-                        : "Contenuto di rclone.conf"
+                        ? "Edit rclone.conf"
+                        : "Contents of rclone.conf"
                     }
                     hint={
                       mode === "edit" && data?.configured
-                        ? "Aggiungi o correggi le sezioni che ti servono, il resto resta com'e. Al salvataggio rclone rilegge tutto."
-                        : "Viene salvato cifrato nel database."
+                        ? "Add or fix the sections you need, the rest stays as it is. On save rclone reloads everything."
+                        : "It is stored encrypted in the database."
                     }
                   >
                     <textarea
@@ -161,8 +161,8 @@ export default function Settings() {
                   </Field>
 
                   <Alert tone="info">
-                    Questo file contiene le credenziali dei tuoi cloud. Cifrato a riposo, ma
-                    chiunque acceda a questa interfaccia potra usare quei remote.
+                    This file holds your cloud credentials. Encrypted at rest, but anyone who
+                    reaches this interface will be able to use those remotes.
                   </Alert>
 
                   <div className="row">
@@ -173,11 +173,11 @@ export default function Settings() {
                       onClick={() => save.mutate()}
                     >
                       {save.isPending ? <Spinner /> : null}
-                      Salva e verifica
+                      Save and verify
                     </button>
                     {data?.configured ? (
                       <button type="button" className="btn ghost" onClick={cancel}>
-                        Annulla
+                        Cancel
                       </button>
                     ) : null}
                   </div>
@@ -193,11 +193,11 @@ export default function Settings() {
                       onClick={() => load.mutate()}
                     >
                       {load.isPending ? <Spinner /> : <PencilLine size={14} />}
-                      Modifica la configurazione
+                      Edit the configuration
                     </button>
                     <button type="button" className="btn ghost" onClick={startFresh}>
                       <FileText size={14} />
-                      Riscrivi da zero
+                      Rewrite from scratch
                     </button>
                     <button
                       type="button"
@@ -205,7 +205,7 @@ export default function Settings() {
                       onClick={() => {
                         if (
                           window.confirm(
-                            "Rimuovere la configurazione rclone? I job che usano un remote smetteranno di funzionare.",
+                            "Remove the rclone configuration? Jobs using a remote will stop working.",
                           )
                         ) {
                           remove.mutate();
@@ -213,7 +213,7 @@ export default function Settings() {
                       }}
                     >
                       <Trash2 size={14} />
-                      Rimuovi
+                      Remove
                     </button>
                   </div>
                 </>

@@ -18,15 +18,15 @@ async def current_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
 ) -> User:
     if credentials is None:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Autenticazione richiesta")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Authentication required")
 
     user_id = decode_token(credentials.credentials)
     if user_id is None:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Sessione scaduta, rifai il login")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Session expired, please sign in again")
 
     user = await session.get(User, user_id)
     if user is None:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Utente non trovato")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "User not found")
     return user
 
 
@@ -34,11 +34,11 @@ UserDep = Annotated[User, Depends(current_user)]
 
 
 async def active_user(user: UserDep) -> User:
-    """Blocca ogni rotta applicativa finche la password iniziale non e stata cambiata."""
+    """Blocks every application route until the initial password has been changed."""
     if user.must_change_password:
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
-            "Cambia la password prima di usare l'applicazione",
+            "Change your password before using the application",
         )
     return user
 

@@ -1,8 +1,8 @@
-"""Registry dei client Telegram connessi e flusso di login.
+"""Registry of connected Telegram clients and the sign in flow.
 
-I client restano connessi per tutta la vita del processo: un sync job puo partire in
-qualsiasi momento e non deve rifare l'autenticazione. Si disconnettono solo quando
-l'account viene rimosso dalla UI.
+Clients stay connected for the whole life of the process: a sync job can start at any
+moment and must not have to authenticate again. They disconnect only when the account is
+removed from the interface.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ PENDING_TTL_SECONDS = 15 * 60
 
 
 class TelegramError(Exception):
-    """Errore da mostrare direttamente all'utente."""
+    """Error meant to be shown directly to the user."""
 
 
 @dataclass
@@ -54,12 +54,12 @@ class TelegramManager:
     def __init__(self) -> None:
         self._clients: dict[int, TelegramClient] = {}
         self._pending: dict[int, _Pending] = {}
-        # Piu job sullo stesso account si contenderebbero il tetto di 20 connessioni
-        # per DC, rallentandosi a vicenda: la fase di upload viene serializzata.
+        # Several jobs on the same account would fight over the ceiling of 20
+        # connections per data center: the upload phase is serialized.
         self._upload_locks: dict[int, asyncio.Semaphore] = {}
         self._upload_limits: dict[int, int] = {}
 
-    # Ciclo di vita
+    # Lifecycle
 
     async def restore_sessions(self) -> None:
         async with SessionLocal() as session:
@@ -71,9 +71,9 @@ class TelegramManager:
         for account in accounts:
             try:
                 await self._connect(account)
-                log.info("Account Telegram %s riconnesso", account.label)
+                log.info("Telegram account %s reconnected", account.label)
             except Exception as exc:
-                log.warning("Riconnessione dell'account %s fallita: %s", account.label, exc)
+                log.warning("Reconnecting account %s failed: %s", account.label, exc)
                 await self._mark_status(account.id, "error", str(exc))
 
     async def shutdown(self) -> None:
@@ -105,7 +105,7 @@ class TelegramManager:
         await client.connect()
         if not await client.is_user_authorized():
             await client.disconnect()
-            raise TelegramError("La sessione non e piu valida, ricollega l'account")
+            raise TelegramError("The session is no longer valid, link the account again")
 
         self._clients[account.id] = client
         await self._mark_status(account.id, "connected", None)
@@ -119,7 +119,7 @@ class TelegramManager:
                 account.last_error = error
                 await session.commit()
 
-    # Accesso
+    # Access
 
     def is_connected(self, account_id: int) -> bool:
         client = self._clients.get(account_id)
@@ -133,17 +133,17 @@ class TelegramManager:
         async with SessionLocal() as session:
             account = await session.get(TelegramAccount, account_id)
         if account is None or not account.session_enc:
-            raise TelegramError("Account Telegram non collegato")
+            raise TelegramError("Telegram account not linked")
         return await self._connect(account)
 
     def upload_lock(self, account_id: int, limit: int = 2) -> asyncio.Semaphore:
-        """Semaforo che limita quanti job caricano insieme su questo account.
+        """Semaphore limiting how many jobs upload at the same time on this account.
 
-        Se il limite cambia si crea un semaforo nuovo: i job che stanno gia
-        caricando rilasceranno quello vecchio, quindi per il tempo di una corsa la
-        concorrenza effettiva puo discostarsi dal valore appena impostato. E
-        preferibile a bloccare la modifica finche tutti i job non hanno finito, che
-        con corse di giorni vorrebbe dire non poterla mai cambiare.
+        When the limit changes a new semaphore is created: jobs already uploading will
+        release the old one, so for the duration of a run the effective concurrency can
+        differ from the value just set. That is preferable to blocking the change until
+        every job has finished, which with runs lasting days would mean never being able
+        to change it.
         """
         limit = max(1, limit)
         existing = self._upload_locks.get(account_id)
@@ -152,7 +152,7 @@ class TelegramManager:
             self._upload_limits[account_id] = limit
         return self._upload_locks[account_id]
 
-    # Login
+    # Sign in
 
     def _sweep_pending(self) -> None:
         now = time.monotonic()
@@ -187,20 +187,20 @@ class TelegramManager:
             sent = await client.send_code_request(phone)
         except ApiIdInvalidError as exc:
             await client.disconnect()
-            raise TelegramError("api_id o api_hash non validi") from exc
+            raise TelegramError("Invalid api_id or api_hash") from exc
         except PhoneNumberInvalidError as exc:
             await client.disconnect()
-            raise TelegramError("Numero di telefono non valido") from exc
+            raise TelegramError("Invalid phone number") from exc
         except Exception as exc:
             await client.disconnect()
-            raise TelegramError(f"Invio del codice fallito: {exc}") from exc
+            raise TelegramError(f"Sending the code failed: {exc}") from exc
 
         self._pending[account_id] = _Pending(client, phone, sent.phone_code_hash)
 
     async def submit_code(self, account_id: int, code: str) -> str:
         pending = self._pending.get(account_id)
         if pending is None:
-            raise TelegramError("Sessione di login scaduta, ricomincia dall'inizio")
+            raise TelegramError("Sign in session expired, start again from the beginning")
 
         try:
             await pending.client.sign_in(
@@ -209,10 +209,10 @@ class TelegramManager:
         except SessionPasswordNeededError:
             return "password"
         except PhoneCodeInvalidError as exc:
-            raise TelegramError("Codice errato") from exc
+            raise TelegramError("Wrong code") from exc
         except PhoneCodeExpiredError as exc:
             await self._drop_pending(account_id)
-            raise TelegramError("Codice scaduto, richiedine uno nuovo") from exc
+            raise TelegramError("Code expired, request a new one") from exc
 
         await self._finalize(account_id)
         return "done"
@@ -220,11 +220,11 @@ class TelegramManager:
     async def submit_password(self, account_id: int, password: str) -> str:
         pending = self._pending.get(account_id)
         if pending is None:
-            raise TelegramError("Sessione di login scaduta, ricomincia dall'inizio")
+            raise TelegramError("Sign in session expired, start again from the beginning")
         try:
             await pending.client.sign_in(password=password)
         except Exception as exc:
-            raise TelegramError(f"Password a due fattori rifiutata: {exc}") from exc
+            raise TelegramError(f"Two-step password rejected: {exc}") from exc
 
         await self._finalize(account_id)
         return "done"
@@ -238,7 +238,7 @@ class TelegramManager:
             account = await session.get(TelegramAccount, account_id)
             if account is None:
                 await client.disconnect()
-                raise TelegramError("Account non trovato")
+                raise TelegramError("Account not found")
 
             account.session_enc = encrypt(client.session.save())
             account.tg_user_id = me.id
@@ -269,24 +269,23 @@ class TelegramManager:
             except Exception:
                 pass
 
-    # Canali
+    # Channels
 
     @staticmethod
     def input_peer(channel) -> InputPeerChannel | InputPeerChat:
-        """Costruisce il peer dai dati salvati, senza risolverlo su Telegram.
+        """Builds the peer from stored data, without resolving it against Telegram.
 
-        Non si passa mai l'id numerico nudo a get_entity: un intero positivo e
-        ambiguo e Telethon lo interpreta come utente. Inoltre StringSession non
-        conserva la cache delle entita, quindi dopo ogni riavvio la risoluzione per
-        id fallirebbe. Con id e access_hash salvati il peer si costruisce a mano, non
-        serve rete e funziona sempre.
+        A bare numeric id is never passed to get_entity: a positive integer is ambiguous
+        and Telethon reads it as a user. On top of that StringSession does not keep the
+        entity cache, so resolving by id would fail after every restart. With the stored
+        id and access_hash the peer is built by hand, needs no network and always works.
         """
         if channel.kind == "group":
             return InputPeerChat(chat_id=channel.tg_id)
         if channel.access_hash is None:
             raise TelegramError(
-                f"Il canale {channel.title} non ha access_hash salvato: "
-                "aggiorna l'elenco dei canali dell'account"
+                f"Channel {channel.title} has no stored access_hash: "
+                "refresh the account channel list"
             )
         return InputPeerChannel(channel_id=channel.tg_id, access_hash=channel.access_hash)
 

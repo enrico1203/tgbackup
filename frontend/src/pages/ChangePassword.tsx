@@ -30,7 +30,7 @@ export default function ChangePassword() {
       });
       await refresh();
     } catch (exc) {
-      setError(exc instanceof Error ? exc.message : "Cambio password non riuscito");
+      setError(exc instanceof Error ? exc.message : "Password change failed");
     } finally {
       setBusy(false);
     }
@@ -43,16 +43,16 @@ export default function ChangePassword() {
           <div className="auth-mark">
             <KeyRound size={24} />
           </div>
-          <h1>Scegli una password</h1>
+          <h1>Choose a password</h1>
           <p>
-            Stai usando la password iniziale. Impostane una tua per continuare, viene salvata
-            nel database.
+            You are using the initial password. Set your own to continue, it is stored in the
+            database.
           </p>
         </div>
 
         {error ? <Alert>{error}</Alert> : null}
 
-        <Field label="Password attuale">
+        <Field label="Current password">
           <input
             type="password"
             value={current}
@@ -63,7 +63,7 @@ export default function ChangePassword() {
           />
         </Field>
 
-        <Field label="Nuova password" hint={`Almeno ${MIN_LENGTH} caratteri.`}>
+        <Field label="New password" hint={`At least ${MIN_LENGTH} characters.`}>
           <input
             type="password"
             value={next}
@@ -73,7 +73,7 @@ export default function ChangePassword() {
           />
         </Field>
 
-        <Field label="Ripeti la nuova password">
+        <Field label="Repeat the new password">
           <input
             type="password"
             value={repeat}
@@ -83,16 +83,16 @@ export default function ChangePassword() {
           />
         </Field>
 
-        {tooShort ? <Alert>La password deve avere almeno {MIN_LENGTH} caratteri.</Alert> : null}
-        {mismatch ? <Alert>Le due password non coincidono.</Alert> : null}
+        {tooShort ? <Alert>The password must be at least {MIN_LENGTH} characters.</Alert> : null}
+        {mismatch ? <Alert>The two passwords do not match.</Alert> : null}
 
         <button className="btn" type="submit" disabled={busy || !valid}>
           {busy ? <Spinner /> : null}
-          {busy ? "Salvataggio" : "Salva e continua"}
+          {busy ? "Saving" : "Save and continue"}
         </button>
 
         <button type="button" className="btn ghost" onClick={logout}>
-          Esci
+          Sign out
         </button>
       </form>
     </div>

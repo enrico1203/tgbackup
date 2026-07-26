@@ -66,7 +66,7 @@ async def submit_code(
 ) -> AccountStepOut:
     account = await session.get(TelegramAccount, account_id)
     if account is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Account non trovato")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Account not found")
 
     try:
         outcome = await manager.submit_code(account_id, payload.code)
@@ -93,7 +93,7 @@ async def submit_password(
 ) -> AccountStepOut:
     account = await session.get(TelegramAccount, account_id)
     if account is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Account non trovato")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Account not found")
 
     try:
         await manager.submit_password(account_id, payload.password)
@@ -115,7 +115,7 @@ async def update_account(
 ) -> AccountOut:
     account = await session.get(TelegramAccount, account_id)
     if account is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Account non trovato")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Account not found")
 
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(account, field, value)
@@ -128,7 +128,7 @@ async def update_account(
 async def delete_account(account_id: int, session: SessionDep, _: ActiveUserDep) -> None:
     account = await session.get(TelegramAccount, account_id)
     if account is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Account non trovato")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Account not found")
 
     jobs = await session.scalar(
         select(func.count(SyncJob.id)).where(SyncJob.account_id == account_id)
@@ -136,7 +136,7 @@ async def delete_account(account_id: int, session: SessionDep, _: ActiveUserDep)
     if jobs:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            f"L'account e usato da {jobs} sync job, eliminali prima di disconnetterlo",
+            f"The account is used by {jobs} sync jobs, delete them before disconnecting it",
         )
 
     await manager.logout(account_id)
@@ -150,7 +150,7 @@ async def list_channels(
 ) -> list[Channel]:
     account = await session.get(TelegramAccount, account_id)
     if account is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Account non trovato")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Account not found")
 
     known = await session.execute(
         select(Channel).where(Channel.account_id == account_id).order_by(Channel.title)

@@ -1,8 +1,8 @@
-"""Esecuzione di un sync job: scansione, diff, cancellazioni, upload.
+"""Execution of a sync job: scan, diff, deletions, upload.
 
-L'obiettivo e che il canale Telegram sia lo specchio esatto della cartella locale.
-Ogni file assente in locale viene cancellato dal canale usando i message id salvati,
-ogni file modificato o rinominato viene cancellato e ricaricato.
+The goal is for the Telegram channel to be the exact mirror of the source. Every file
+missing from the source is deleted from the channel using the stored message ids, and
+every modified or renamed file is deleted and uploaded again.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ DELETE_BATCH = 100
 
 
 def part_plan(size: int, part_size: int) -> list[tuple[int, int]]:
-    """Restituisce le fette (offset, lunghezza) in cui spezzare un file."""
+    """Returns the slices (offset, length) a file has to be split into."""
     if size <= part_size:
         return [(0, size)]
     count = math.ceil(size / part_size)
@@ -40,21 +40,21 @@ def part_plan(size: int, part_size: int) -> list[tuple[int, int]]:
 
 
 def build_caption(rel_path: str, name: str, index: int, total: int) -> str:
-    """Didascalia del messaggio.
+    """Message caption.
 
-    Formato fissato dall'utente:
+    Format fixed by the user:
 
-        FileName: <nome del file>
-        Path: <cartella che lo contiene, relativa alla radice del job>
+        FileName: <file name>
+        Path: <folder holding it, relative to the job root>
 
-    La riga Part compare solo sui file spezzati, dove serve a ricomporre l'ordine.
-    Dimensione e mtime non stanno nella didascalia: sono nel database.
+    The Part line only shows on split files, where it is needed to restore the order.
+    Size and mtime are not in the caption: they live in the database.
     """
     folder = os.path.dirname(rel_path)
     lines = [f"FileName: {name}", f"Path: {folder}"]
     if total > 1:
         lines.append(f"Part: {index + 1}/{total}")
-    # Il limite del testo di un messaggio e 1024 caratteri con media allegato.
+    # A message caption is limited to 1024 characters when media is attached.
     return "\n".join(lines)[:1024]
 
 
@@ -70,12 +70,12 @@ class JobCancelled(Exception):
 
 
 class StopSignal:
-    """Richiesta di fermare un job, con il motivo.
+    """Request to stop a job, carrying the reason.
 
-    Il motivo conta: se il job si ferma perche il processo si sta spegnendo, la corsa
-    successiva non va rimandata di un intervallo intero, altrimenti ogni riavvio del
-    container sposterebbe il backup di ore. Se invece a fermarlo e stato l'utente,
-    l'intervallo normale va rispettato.
+    The reason matters: if the job stops because the process is shutting down, the next
+    run must not be pushed forward by a whole interval, otherwise every container restart
+    would move the backup by hours. If the user stopped it instead, the normal interval
+    applies.
     """
 
     def __init__(self) -> None:
@@ -106,7 +106,7 @@ class JobRunner:
                 return
             channel = await session.get(Channel, job.channel_id)
             if channel is None:
-                raise RuntimeError("Il canale del job non esiste piu")
+                raise RuntimeError("The job channel no longer exists")
 
             run = JobRun(job_id=job.id)
             session.add(run)
@@ -124,8 +124,8 @@ class JobRunner:
 
             account = await session.get(TelegramAccount, job.account_id)
             concurrency = max(1, account.max_concurrent_jobs if account else 2)
-            # Il tetto di 20 connessioni e per data center, non per job: va diviso
-            # fra i job che possono caricare insieme, altrimenti Telegram le blocca.
+            # The ceiling of 20 connections is per data center, not per job: it has to be
+            # divided among the jobs allowed to upload together, or Telegram blocks them.
             max_connections = max(1, MAX_CONNECTIONS // concurrency)
 
         progress = hub.start_job(self.job_id, job_name)
@@ -143,16 +143,16 @@ class JobRunner:
             await self._set_phase("delete")
             removed = await self._apply_deletions(client, entity)
 
-            # Due job sullo stesso account aprirebbero 20 connessioni ciascuno e
-            # supererebbero il tetto per data center, bloccandosi a vicenda: la fase
-            # di upload viene serializzata per account. Solo questa fase, pero:
-            # scansione e pulizia possono procedere in parallelo, e l'attesa ha una
-            # fase propria per non far sembrare fermo un job che sta solo in coda.
+            # Two jobs on the same account would each open 20 connections and exceed the
+            # per data center ceiling, blocking each other: the upload phase is serialized
+            # per account. Only this phase, though: scanning and cleanup can go on in
+            # parallel, and waiting has a phase of its own so a queued job does not look
+            # stuck.
             lock = manager.upload_lock(account_id, concurrency)
             if lock.locked():
                 progress.phase = "waiting"
                 await self._set_phase("waiting")
-                log.info("Job %d in attesa dell'account %d per caricare", self.job_id, account_id)
+                log.info("Job %d waiting for account %d to upload", self.job_id, account_id)
 
             async with lock:
                 self._check_cancel()
@@ -192,7 +192,7 @@ class JobRunner:
                 job.phase = phase
                 await session.commit()
 
-    # Scansione e confronto
+    # Scanning and comparison
 
     async def _diff(self, source, run_id: int, progress) -> dict:
         def report(files: int, dirs: int, total_bytes: int, where: str) -> None:
@@ -234,7 +234,7 @@ class JobRunner:
                     )
                     added += 1
                 elif entry.size != item.size or entry.mtime_ns != item.mtime_ns:
-                    # Contenuto cambiato: le vecchie parti su Telegram non valgono piu.
+                    # Content changed: the old parts on Telegram are no longer valid.
                     entry.size = item.size
                     entry.mtime_ns = item.mtime_ns
                     entry.name = item.name
@@ -242,10 +242,10 @@ class JobRunner:
                     entry.error = None
                     modified += 1
                 elif entry.state in ("error", "uploading"):
-                    # Nuovo tentativo per i file rimasti a meta al giro precedente,
-                    # per errore o per un arresto del processo. Si passa da stale, non
-                    # da pending: le parti gia spedite sono registrate e vanno prima
-                    # cancellate dal canale, altrimenti resterebbero messaggi orfani.
+                    # Retry for files left half done on the previous round, by error or by
+                    # a process stop. They go through stale, not pending: the parts already
+                    # sent are recorded and must first be deleted from the channel, or they
+                    # would stay as orphan messages.
                     entry.state = "stale"
                     entry.error = None
 
@@ -262,10 +262,10 @@ class JobRunner:
 
         return {"scanned": len(on_disk), "added": added, "modified": modified}
 
-    # Cancellazioni
+    # Deletions
 
     async def _apply_deletions(self, client, entity) -> int:
-        """Cancella da Telegram cio che non esiste piu in locale o che va ricaricato."""
+        """Deletes from Telegram what no longer exists at the source or needs re-uploading."""
         removed = 0
         while True:
             self._check_cancel()
@@ -300,7 +300,7 @@ class JobRunner:
                         await session.delete(entry)
                         removed += 1
                     else:
-                        # Il file esiste ancora in locale, va solo ricaricato.
+                        # The file still exists at the source, it only needs re-uploading.
                         entry.state = "pending"
                         entry.parts_total = 1
                 await session.commit()
@@ -311,12 +311,12 @@ class JobRunner:
             try:
                 await client.delete_messages(entity, chunk)
             except FloodWaitError as exc:
-                log.warning("Flood wait di %ss durante la cancellazione", exc.seconds)
+                log.warning("Flood wait of %ss while deleting", exc.seconds)
                 await asyncio.sleep(exc.seconds + 1)
                 await client.delete_messages(entity, chunk)
             except Exception as exc:
-                # Un messaggio gia sparito dal canale non deve bloccare il job.
-                log.warning("Cancellazione di %d messaggi fallita: %s", len(chunk), exc)
+                # A message already gone from the channel must not block the job.
+                log.warning("Deleting %d messages failed: %s", len(chunk), exc)
 
     # Upload
 
@@ -369,8 +369,8 @@ class JobRunner:
                 async with SessionLocal() as session:
                     entry = await session.get(FileEntry, file_id)
                     if entry is not None and entry.state == "uploading":
-                        # Se qualche parte era gia partita va cancellata al giro dopo,
-                        # altrimenti resterebbe orfana sul canale.
+                        # If any part had already gone out it must be deleted next round,
+                        # otherwise it would stay orphaned in the channel.
                         has_parts = await session.scalar(
                             select(func.count(FilePart.id)).where(FilePart.file_id == file_id)
                         )
@@ -378,7 +378,7 @@ class JobRunner:
                         await session.commit()
                 raise
             except Exception as exc:
-                log.exception("Upload di %s fallito", rel_path)
+                log.exception("Upload of %s failed", rel_path)
                 async with SessionLocal() as session:
                     entry = await session.get(FileEntry, file_id)
                     if entry is not None:
@@ -414,11 +414,11 @@ class JobRunner:
         file_id: int,
         max_connections: int,
     ) -> int:
-        """Carica un file, spezzandolo se supera la soglia. Ritorna il numero di parti.
+        """Uploads a file, splitting it above the threshold. Returns the number of parts.
 
-        Ogni parte viene registrata nel database appena il messaggio e stato inviato:
-        se il processo cade a meta di un file grande, il message id e gia salvato e al
-        giro successivo la parte viene cancellata invece di restare orfana sul canale.
+        Every part is recorded in the database as soon as its message has been sent: if the
+        process dies in the middle of a large file, the message id is already stored and on
+        the next round the part is deleted instead of staying orphaned in the channel.
         """
         slices = part_plan(size, part_size)
         progress.current_parts = len(slices)
@@ -437,8 +437,8 @@ class JobRunner:
                 entity,
                 handle,
                 caption=caption,
-                # Foto e video devono restare documenti: niente ricompressione,
-                # niente perdita di qualita, byte identici all'originale.
+                # Photos and videos must stay documents: no recompression, no quality
+                # loss, bytes identical to the original.
                 force_document=True,
                 attributes=[DocumentAttributeFilename(file_name)],
             )
@@ -465,8 +465,8 @@ class JobRunner:
         while True:
             attempt += 1
             try:
-                # Il lettore si ricrea a ogni tentativo: su un remote significa
-                # riaprire la richiesta con intervallo dal punto giusto.
+                # The reader is rebuilt on every attempt: on a remote that means reopening
+                # the ranged request from the right point.
                 return await upload_slice(
                     client,
                     source.reader(rel_path, offset, length),
@@ -478,41 +478,41 @@ class JobRunner:
                     max_connections=max_connections,
                 )
             except FloodWaitError as exc:
-                log.warning("Flood wait di %ss durante l'upload di %s", exc.seconds, file_name)
+                log.warning("Flood wait of %ss while uploading %s", exc.seconds, file_name)
                 await asyncio.sleep(exc.seconds + 1)
             except asyncio.CancelledError:
                 raise JobCancelled() from None
             except Exception:
                 if attempt >= 3:
                     raise
-                log.warning("Ritento l'upload di %s (tentativo %d)", file_name, attempt + 1)
-                # I byte del tentativo fallito sono gia stati contati: si riparte da zero
-                # sulla fetta, la stima di velocita si riassesta da sola.
+                log.warning("Retrying the upload of %s (attempt %d)", file_name, attempt + 1)
+                # The bytes of the failed attempt were already counted: the slice restarts
+                # from zero and the speed estimate settles again by itself.
                 await asyncio.sleep(5 * attempt)
 
 
 async def execute_job(job_id: int, cancel: StopSignal) -> None:
-    """Esegue un job e riprogramma la corsa successiva a partire dalla fine."""
+    """Runs a job and schedules the next run starting from the end of this one."""
     runner = JobRunner(job_id, cancel)
 
     status = "idle"
     error: str | None = None
     interrupted_by_shutdown = False
     try:
-        # Nessun semaforo qui: serializzare l'intera esecuzione impedirebbe a un job
-        # perfino di scansionare mentre un altro sullo stesso account carica, e con
-        # corse che durano giorni resterebbe fermo per giorni. Il semaforo sta dentro
-        # run(), attorno alla sola fase di upload.
+        # No semaphore here: serializing the whole execution would stop a job from even
+        # scanning while another one on the same account uploads, and with runs lasting
+        # days it would sit still for days. The semaphore lives inside run(), around the
+        # upload phase alone.
         await runner.run()
     except JobCancelled:
         interrupted_by_shutdown = cancel.reason == "shutdown"
         log.info(
-            "Job %d interrotto (%s)",
+            "Job %d interrupted (%s)",
             job_id,
-            "spegnimento" if interrupted_by_shutdown else "richiesta dell'utente",
+            "shutdown" if interrupted_by_shutdown else "user request",
         )
     except Exception as exc:
-        log.exception("Job %d fallito", job_id)
+        log.exception("Job %d failed", job_id)
         status = "error"
         error = str(exc)[:1000]
 
@@ -524,11 +524,11 @@ async def execute_job(job_id: int, cancel: StopSignal) -> None:
             job.last_error = error
             job.last_finished_at = utcnow()
             if not interrupted_by_shutdown:
-                # L'intervallo parte dalla fine: un job che dura tre giorni non accumula
-                # esecuzioni arretrate da recuperare tutte insieme.
+                # The interval starts from the end: a job running for three days does not
+                # pile up missed executions to catch up all at once.
                 job.next_run_at = datetime.now(timezone.utc) + timedelta(
                     hours=job.interval_hours
                 )
-            # Se a fermarlo e stato lo spegnimento, next_run_at resta com'era: al
-            # riavvio il job riprende subito invece di saltare un intervallo intero.
+            # If shutdown stopped it, next_run_at stays as it was: on restart the job
+            # resumes right away instead of skipping a whole interval.
             await session.commit()

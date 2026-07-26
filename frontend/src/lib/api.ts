@@ -31,12 +31,12 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   const response = await fetch(path, { ...init, headers });
 
-  // Un 401 sul login significa credenziali sbagliate, non sessione scaduta: va
-  // mostrato il messaggio del backend, non ricaricata la pagina.
+  // A 401 on sign in means wrong credentials, not an expired session: the backend
+  // message must be shown instead of reloading the page.
   if (response.status === 401 && path !== LOGIN_PATH) {
     clearToken();
     window.location.reload();
-    throw new ApiError(401, "Sessione scaduta");
+    throw new ApiError(401, "Session expired");
   }
 
   if (response.status === 204) return undefined as T;
@@ -48,7 +48,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
         ? body.detail
         : Array.isArray(body?.detail)
           ? body.detail.map((d: { msg: string }) => d.msg).join(", ")
-          : "Richiesta non riuscita";
+          : "Request failed";
     throw new ApiError(response.status, detail);
   }
   return body as T;

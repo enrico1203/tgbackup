@@ -1,10 +1,10 @@
-"""Astrazione della sorgente di un sync job.
+"""Abstraction over the source of a sync job.
 
-Una cartella montata nel container e un remote rclone si comportano allo stesso modo
-dal punto di vista del job: entrambi sanno elencare i propri file con percorso,
-dimensione e mtime, e sanno restituire un lettore per un intervallo di byte.
+A folder mounted in the container and an rclone remote behave the same way from the job's
+point of view: both can list their files with path, size and mtime, and both can return a
+reader over a byte range.
 
-Il resto del runner non deve sapere quale delle due sta usando.
+The rest of the runner does not need to know which of the two it is using.
 """
 
 from __future__ import annotations
@@ -54,7 +54,7 @@ class RcloneSource:
     kind = "rclone"
 
     def __init__(self, remote: str) -> None:
-        # Normalizzato una volta sola: "nome:" oppure "nome:sottocartella".
+        # Normalized once: "name:" or "name:subfolder".
         self.remote = remote.strip()
 
     @property
@@ -64,7 +64,7 @@ class RcloneSource:
     async def list_files(self, on_progress=None) -> list[SourceFile]:
         def report(files: int, total_bytes: int, where: str) -> None:
             if on_progress is not None:
-                # Un remote non riporta un conteggio di cartelle: resta a zero.
+                # A remote reports no folder count: it stays at zero.
                 on_progress(files, 0, total_bytes, where)
 
         found = await rclone.list_files(self.remote, on_progress=report)
@@ -83,6 +83,6 @@ class RcloneSource:
 def build_source(job) -> LocalSource | RcloneSource:
     if job.source_type == "rclone":
         if not job.remote:
-            raise ValueError("Il job e di tipo rclone ma non ha un remote configurato")
+            raise ValueError("The job is of type rclone but has no remote configured")
         return RcloneSource(job.remote)
     return LocalSource(job.local_path, job.scan_files_per_sec)

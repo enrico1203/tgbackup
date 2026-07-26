@@ -22,20 +22,20 @@ import { Pill } from "./ui";
 
 const NAV = [
   { to: "/", label: "Dashboard", icon: Gauge, end: true },
-  { to: "/jobs", label: "Sync job", icon: CloudUpload, end: false },
-  { to: "/accounts", label: "Account Telegram", icon: Users, end: false },
-  { to: "/files", label: "File e restore", icon: Archive, end: false },
-  { to: "/runs", label: "Storico", icon: History, end: false },
-  { to: "/settings", label: "Impostazioni", icon: SlidersHorizontal, end: false },
+  { to: "/jobs", label: "Sync jobs", icon: CloudUpload, end: false },
+  { to: "/accounts", label: "Telegram accounts", icon: Users, end: false },
+  { to: "/files", label: "Files and restore", icon: Archive, end: false },
+  { to: "/runs", label: "History", icon: History, end: false },
+  { to: "/settings", label: "Settings", icon: SlidersHorizontal, end: false },
 ];
 
 const TITLES: Record<string, string> = {
   "/": "Dashboard",
-  "/jobs": "Sync job",
-  "/accounts": "Account Telegram",
-  "/files": "File e restore",
-  "/runs": "Storico esecuzioni",
-  "/settings": "Impostazioni",
+  "/jobs": "Sync jobs",
+  "/accounts": "Telegram accounts",
+  "/files": "Files and restore",
+  "/runs": "Run history",
+  "/settings": "Settings",
 };
 
 export default function Shell() {
@@ -49,8 +49,8 @@ export default function Shell() {
     applyTheme(theme);
   }, [theme]);
 
-  // Cambiando pagina il menu si richiude da solo: su telefono resterebbe aperto
-  // sopra il contenuto appena scelto.
+  // Changing page closes the menu on its own: on a phone it would otherwise stay open
+  // over the content just chosen.
   useEffect(() => {
     setMenuOpen(false);
   }, [location.pathname]);
@@ -60,7 +60,7 @@ export default function Shell() {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") setMenuOpen(false);
     };
-    // Blocca lo scorrimento dietro al menu aperto.
+    // Blocks scrolling behind the open menu.
     document.body.classList.add("no-scroll");
     window.addEventListener("keydown", onKey);
     return () => {
@@ -72,14 +72,14 @@ export default function Shell() {
   const running = jobs.size;
   const title =
     TITLES[location.pathname] ??
-    (location.pathname.startsWith("/jobs/") ? "Dettaglio job" : "tgbackup");
+    (location.pathname.startsWith("/jobs/") ? "Job detail" : "tgbackup");
 
   return (
     <div className={menuOpen ? "shell menu-open" : "shell"}>
       <button
         type="button"
         className="scrim"
-        aria-label="Chiudi il menu"
+        aria-label="Close the menu"
         tabIndex={menuOpen ? 0 : -1}
         onClick={() => setMenuOpen(false)}
       />
@@ -91,7 +91,7 @@ export default function Shell() {
           </div>
           <div>
             <div className="brand-name">tgbackup</div>
-            <div className="brand-sub">Backup su Telegram</div>
+            <div className="brand-sub">Backup to Telegram</div>
           </div>
         </div>
 
@@ -123,11 +123,11 @@ export default function Shell() {
             onClick={() => setTheme((current) => nextTheme(current))}
           >
             {resolveTheme(theme) === "dark" ? <Sun size={17} /> : <Moon size={17} />}
-            <span>{resolveTheme(theme) === "dark" ? "Tema chiaro" : "Tema scuro"}</span>
+            <span>{resolveTheme(theme) === "dark" ? "Light theme" : "Dark theme"}</span>
           </button>
           <button type="button" className="nav-item" onClick={logout}>
             <LogOut size={17} />
-            <span>Esci da {user?.username}</span>
+            <span>Sign out {user?.username}</span>
           </button>
         </div>
       </aside>
@@ -137,7 +137,7 @@ export default function Shell() {
           <button
             type="button"
             className="icon-btn menu-button"
-            aria-label={menuOpen ? "Chiudi il menu" : "Apri il menu"}
+            aria-label={menuOpen ? "Close the menu" : "Open the menu"}
             aria-expanded={menuOpen}
             onClick={() => setMenuOpen((open) => !open)}
           >
@@ -147,12 +147,12 @@ export default function Shell() {
           <div className="topbar-actions">
             {connected ? (
               <Pill tone="ok" live>
-                Tempo reale
+                Live
               </Pill>
             ) : (
               <Pill tone="mute">
                 <RefreshCcw size={11} />
-                Riconnessione
+                Reconnecting
               </Pill>
             )}
           </div>

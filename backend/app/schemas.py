@@ -8,7 +8,7 @@ class Model(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-# Autenticazione
+# Authentication
 
 
 class LoginIn(BaseModel):
@@ -33,7 +33,7 @@ class MeOut(Model):
     must_change_password: bool
 
 
-# Account Telegram
+# Telegram accounts
 
 
 class AccountStartIn(BaseModel):
@@ -71,8 +71,8 @@ class AccountOut(Model):
 
 class AccountUpdate(BaseModel):
     label: str | None = Field(default=None, min_length=1, max_length=128)
-    # Il tetto e 20 perche tante sono le connessioni per data center: con piu job
-    # di cosi ognuno resterebbe con meno di una connessione.
+    # The ceiling is 20 because that is the number of connections per data center: with
+    # more jobs than that each would be left with less than one connection.
     max_concurrent_jobs: int | None = Field(default=None, ge=1, le=20)
     default_part_size: int | None = Field(default=None, gt=0)
 
@@ -84,7 +84,7 @@ class AccountStepOut(BaseModel):
     account: AccountOut | None = None
 
 
-# Canali
+# Channels
 
 
 class ChannelOut(Model):
@@ -158,7 +158,7 @@ class JobOut(Model):
 
     account_label: str = ""
     channel_title: str = ""
-    # Serve al frontend per costruire i link t.me/c/<canale>/<messaggio>.
+    # Used by the frontend to build the t.me/c/<channel>/<message> links.
     channel_tg_id: int = 0
     stats: JobStats = JobStats()
 
@@ -178,7 +178,7 @@ class JobRunOut(Model):
     error: str | None
 
 
-# File
+# Files
 
 
 class FilePartOut(Model):
