@@ -61,11 +61,20 @@ class AccountOut(Model):
     username: str | None
     is_premium: bool
     default_part_size: int
+    max_concurrent_jobs: int
     status: str
     last_error: str | None
     created_at: datetime
     connected: bool = False
     channels_count: int = 0
+
+
+class AccountUpdate(BaseModel):
+    label: str | None = Field(default=None, min_length=1, max_length=128)
+    # Il tetto e 20 perche tante sono le connessioni per data center: con piu job
+    # di cosi ognuno resterebbe con meno di una connessione.
+    max_concurrent_jobs: int | None = Field(default=None, ge=1, le=20)
+    default_part_size: int | None = Field(default=None, gt=0)
 
 
 class AccountStepOut(BaseModel):

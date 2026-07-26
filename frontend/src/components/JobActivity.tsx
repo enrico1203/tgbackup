@@ -10,6 +10,8 @@ export function phaseLabel(phase: string): string {
       return "Confronto";
     case "delete":
       return "Pulizia";
+    case "waiting":
+      return "In coda";
     case "upload":
       return "Upload";
     default:
@@ -45,6 +47,21 @@ export default function JobActivity({ progress }: { progress: JobProgress }) {
           </span>
         </div>
       </>
+    );
+  }
+
+  if (progress.phase === "waiting") {
+    return (
+      <div className="row wrap num" style={{ gap: 20, fontSize: 12.5 }}>
+        <strong>In attesa che l'account Telegram si liberi</strong>
+        <span style={{ color: "var(--muted)" }}>
+          scansione gia fatta, {files.toLocaleString("it-IT")} file nella sorgente per{" "}
+          {formatBytes(bytes)}
+        </span>
+        <span style={{ color: "var(--muted)" }}>
+          un altro job sta caricando sullo stesso account
+        </span>
+      </div>
     );
   }
 

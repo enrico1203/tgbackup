@@ -18,8 +18,8 @@ from telethon.errors import FloodWaitError
 from telethon.tl.types import DocumentAttributeFilename
 
 from ..db import SessionLocal
-from ..models import Channel, FileEntry, FilePart, JobRun, SyncJob, utcnow
-from ..telegram.fast_transfer import upload_slice
+from ..models import Channel, FileEntry, FilePart, JobRun, SyncJob, TelegramAccount, utcnow
+from ..telegram.fast_transfer import MAX_CONNECTIONS, upload_slice
 from ..telegram.manager import manager
 from .progress import hub
 from .source import build_source
@@ -122,6 +122,12 @@ class JobRunner:
             peer = manager.input_peer(channel)
             source = build_source(job)
 
+            account = await session.get(TelegramAccount, job.account_id)
+            concurrency = max(1, account.max_concurrent_jobs if account else 2)
+            # Il tetto di 20 connessioni e per data center, non per job: va diviso
+            # fra i job che possono caricare insieme, altrimenti Telegram le blocca.
+            max_connections = max(1, MAX_CONNECTIONS // concurrency)
+
         progress = hub.start_job(self.job_id, job_name)
         progress.phase = "scan"
 
@@ -137,11 +143,24 @@ class JobRunner:
             await self._set_phase("delete")
             removed = await self._apply_deletions(client, entity)
 
-            progress.phase = "upload"
-            await self._set_phase("upload")
-            uploaded_files, uploaded_bytes = await self._upload_pending(
-                client, entity, part_size, progress, source
-            )
+            # Due job sullo stesso account aprirebbero 20 connessioni ciascuno e
+            # supererebbero il tetto per data center, bloccandosi a vicenda: la fase
+            # di upload viene serializzata per account. Solo questa fase, pero:
+            # scansione e pulizia possono procedere in parallelo, e l'attesa ha una
+            # fase propria per non far sembrare fermo un job che sta solo in coda.
+            lock = manager.upload_lock(account_id, concurrency)
+            if lock.locked():
+                progress.phase = "waiting"
+                await self._set_phase("waiting")
+                log.info("Job %d in attesa dell'account %d per caricare", self.job_id, account_id)
+
+            async with lock:
+                self._check_cancel()
+                progress.phase = "upload"
+                await self._set_phase("upload")
+                uploaded_files, uploaded_bytes = await self._upload_pending(
+                    client, entity, part_size, progress, source, max_connections
+                )
 
             async with SessionLocal() as session:
                 run = await session.get(JobRun, run_id)
@@ -302,7 +321,7 @@ class JobRunner:
     # Upload
 
     async def _upload_pending(
-        self, client, entity, part_size: int, progress, source
+        self, client, entity, part_size: int, progress, source, max_connections: int
     ) -> tuple[int, int]:
         async with SessionLocal() as session:
             totals = await session.execute(
@@ -344,7 +363,7 @@ class JobRunner:
             try:
                 sent = await self._upload_one(
                     client, entity, source, rel_path, name, size, part_size,
-                    progress, file_id
+                    progress, file_id, max_connections
                 )
             except JobCancelled:
                 async with SessionLocal() as session:
@@ -393,6 +412,7 @@ class JobRunner:
         part_size: int,
         progress,
         file_id: int,
+        max_connections: int,
     ) -> int:
         """Carica un file, spezzandolo se supera la soglia. Ritorna il numero di parti.
 
@@ -409,7 +429,7 @@ class JobRunner:
             file_name = part_file_name(name, index, len(slices))
 
             handle = await self._upload_with_retry(
-                client, source, rel_path, offset, length, file_name, progress
+                client, source, rel_path, offset, length, file_name, progress, max_connections
             )
 
             caption = build_caption(rel_path, name, index, len(slices))
@@ -438,7 +458,8 @@ class JobRunner:
         return len(slices)
 
     async def _upload_with_retry(
-        self, client, source, rel_path: str, offset: int, length: int, file_name: str, progress
+        self, client, source, rel_path: str, offset: int, length: int, file_name: str,
+        progress, max_connections: int,
     ):
         attempt = 0
         while True:
@@ -454,6 +475,7 @@ class JobRunner:
                     on_progress=progress.add_bytes,
                     cancel=self.cancel,
                     source=f"{source.label}/{rel_path}",
+                    max_connections=max_connections,
                 )
             except FloodWaitError as exc:
                 log.warning("Flood wait di %ss durante l'upload di %s", exc.seconds, file_name)
@@ -472,18 +494,16 @@ class JobRunner:
 async def execute_job(job_id: int, cancel: StopSignal) -> None:
     """Esegue un job e riprogramma la corsa successiva a partire dalla fine."""
     runner = JobRunner(job_id, cancel)
-    async with SessionLocal() as session:
-        job = await session.get(SyncJob, job_id)
-        account_id = job.account_id if job else None
-
-    lock = manager.upload_lock(account_id) if account_id is not None else asyncio.Semaphore(1)
 
     status = "idle"
     error: str | None = None
     interrupted_by_shutdown = False
     try:
-        async with lock:
-            await runner.run()
+        # Nessun semaforo qui: serializzare l'intera esecuzione impedirebbe a un job
+        # perfino di scansionare mentre un altro sullo stesso account carica, e con
+        # corse che durano giorni resterebbe fermo per giorni. Il semaforo sta dentro
+        # run(), attorno alla sola fase di upload.
+        await runner.run()
     except JobCancelled:
         interrupted_by_shutdown = cancel.reason == "shutdown"
         log.info(

@@ -327,7 +327,10 @@ function JobCard({ job, onEdit }: { job: Job; onEdit: (job: Job) => void }) {
       <CardHead title={job.name}>
         <div className="row" style={{ gap: 8 }}>
           {running ? (
-            <Pill tone="ok" live>
+            <Pill
+              tone={(progress?.phase ?? job.phase) === "waiting" ? "mute" : "ok"}
+              live={(progress?.phase ?? job.phase) !== "waiting"}
+            >
               {phaseLabel(progress?.phase ?? job.phase ?? "")}
             </Pill>
           ) : failed ? (

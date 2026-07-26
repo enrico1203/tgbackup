@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Crown, Hash, Plus, RefreshCcw, Trash2, UserCircle2 } from "lucide-react";
+import { Crown, Hash, Plus, RefreshCcw, Settings2, Trash2, UserCircle2 } from "lucide-react";
 
 import { api } from "../lib/api";
 import { formatBytes, formatDateTime } from "../lib/format";
@@ -249,9 +249,85 @@ function ChannelList({ accountId }: { accountId: number }) {
   );
 }
 
+const MAX_DC_CONNECTIONS = 20;
+
+function AccountSettingsModal({
+  account,
+  onClose,
+}: {
+  account: Account;
+  onClose: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [label, setLabel] = useState(account.label);
+  const [concurrency, setConcurrency] = useState(String(account.max_concurrent_jobs));
+
+  const save = useMutation({
+    mutationFn: () =>
+      api.patch<Account>(`/api/accounts/${account.id}`, {
+        label: label.trim(),
+        max_concurrent_jobs: Number(concurrency),
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["accounts"] });
+      onClose();
+    },
+  });
+
+  const jobs = Math.max(1, Number(concurrency) || 1);
+  const perJob = Math.max(1, Math.floor(MAX_DC_CONNECTIONS / jobs));
+
+  return (
+    <Modal
+      title={`Impostazioni di ${account.label}`}
+      onClose={onClose}
+      footer={
+        <>
+          <button type="button" className="btn ghost" onClick={onClose}>
+            Annulla
+          </button>
+          <button
+            type="button"
+            className="btn"
+            disabled={!label.trim() || jobs < 1 || save.isPending}
+            onClick={() => save.mutate()}
+          >
+            {save.isPending ? <Spinner /> : null}
+            Salva
+          </button>
+        </>
+      }
+    >
+      {save.isError ? <Alert>{(save.error as Error).message}</Alert> : null}
+
+      <Field label="Nome dell'account">
+        <input value={label} onChange={(e) => setLabel(e.target.value)} />
+      </Field>
+
+      <Field
+        label="Job che possono caricare contemporaneamente"
+        hint="Da 1 a 20. Oltre questo numero i job restano in coda e la loro scheda mostra In coda."
+      >
+        <input
+          value={concurrency}
+          inputMode="numeric"
+          onChange={(e) => setConcurrency(e.target.value.replace(/\D/g, ""))}
+        />
+      </Field>
+
+      <Alert tone="info">
+        Telegram accetta al massimo {MAX_DC_CONNECTIONS} connessioni per data center, quindi il
+        budget viene diviso: con {jobs} job insieme ognuno ne usa {perJob}. Alzare questo numero
+        non aumenta la banda totale, la distribuisce fra piu job.
+      </Alert>
+    </Modal>
+  );
+}
+
 export default function Accounts() {
   const queryClient = useQueryClient();
   const [linking, setLinking] = useState(false);
+  const [editing, setEditing] = useState<Account | null>(null);
   const [expanded, setExpanded] = useState<number | null>(null);
 
   const { data, isLoading } = useQuery({
@@ -295,7 +371,8 @@ export default function Accounts() {
                   <th>Account</th>
                   <th>Stato</th>
                   <th>Parte massima</th>
-                  <th>Canali</th>
+                  <th className="right">Job insieme</th>
+                  <th className="right">Canali</th>
                   <th>Collegato il</th>
                   <th className="right">Azioni</th>
                 </tr>
@@ -329,9 +406,22 @@ export default function Accounts() {
                         {formatBytes(account.default_part_size)}
                       </span>
                     </td>
-                    <td className="num">{account.channels_count}</td>
+                    <td className="right num">{account.max_concurrent_jobs}</td>
+                    <td className="right num">{account.channels_count}</td>
                     <td style={{ whiteSpace: "nowrap" }}>{formatDateTime(account.created_at)}</td>
                     <td className="right">
+                      <button
+                        type="button"
+                        className="btn ghost small"
+                        style={{ marginRight: 8 }}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setEditing(account);
+                        }}
+                      >
+                        <Settings2 size={13} />
+                        Impostazioni
+                      </button>
                       <button
                         type="button"
                         className="btn danger small"
@@ -378,6 +468,9 @@ export default function Accounts() {
       ) : null}
 
       {linking ? <LinkAccountModal onClose={() => setLinking(false)} /> : null}
+      {editing ? (
+        <AccountSettingsModal account={editing} onClose={() => setEditing(null)} />
+      ) : null}
     </>
   );
 }

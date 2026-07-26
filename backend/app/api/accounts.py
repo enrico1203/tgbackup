@@ -9,6 +9,7 @@ from ..schemas import (
     AccountPasswordIn,
     AccountStartIn,
     AccountStepOut,
+    AccountUpdate,
     ChannelOut,
 )
 from ..security import encrypt
@@ -106,6 +107,21 @@ async def submit_password(
         needs=None,
         account=await _to_out(session, account),
     )
+
+
+@router.patch("/{account_id}", response_model=AccountOut)
+async def update_account(
+    account_id: int, payload: AccountUpdate, session: SessionDep, _: ActiveUserDep
+) -> AccountOut:
+    account = await session.get(TelegramAccount, account_id)
+    if account is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Account non trovato")
+
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(account, field, value)
+    await session.commit()
+    await session.refresh(account)
+    return await _to_out(session, account)
 
 
 @router.delete("/{account_id}", status_code=status.HTTP_204_NO_CONTENT)

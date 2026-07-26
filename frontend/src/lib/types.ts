@@ -20,6 +20,7 @@ export interface Account {
   username: string | null;
   is_premium: boolean;
   default_part_size: number;
+  max_concurrent_jobs: number;
   status: string;
   last_error: string | null;
   created_at: string;

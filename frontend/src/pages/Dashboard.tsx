@@ -68,7 +68,12 @@ export default function Dashboard() {
                   <div style={{ minWidth: 0 }}>
                     <span style={{ fontWeight: 600 }}>{job.name}</span>
                   </div>
-                  <Pill tone={job.phase === "upload" ? "ok" : "warn"} live>
+                  <Pill
+                    tone={
+                      job.phase === "upload" ? "ok" : job.phase === "waiting" ? "mute" : "warn"
+                    }
+                    live={job.phase !== "waiting"}
+                  >
                     {phaseLabel(job.phase)}
                   </Pill>
                 </div>

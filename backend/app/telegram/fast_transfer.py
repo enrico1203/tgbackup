@@ -202,6 +202,7 @@ async def upload_slice(
     on_progress: ProgressCallback | None = None,
     cancel: asyncio.Event | None = None,
     source: str = "",
+    max_connections: int = MAX_CONNECTIONS,
 ) -> InputFile | InputFileBig:
     """Carica `length` byte presi da `reader` e restituisce l'handle Telegram.
 
@@ -219,7 +220,9 @@ async def upload_slice(
 
     file_id = helpers.generate_random_long()
     is_big = length > BIG_FILE_THRESHOLD
-    connections = connection_count(length)
+    # Il tetto arriva da chi chiama: se piu job caricano sullo stesso account, il
+    # budget di 20 connessioni per data center e gia stato diviso fra loro.
+    connections = connection_count(length, max(1, min(max_connections, MAX_CONNECTIONS)))
 
     transferrer = ParallelTransferrer(client)
     senders = [

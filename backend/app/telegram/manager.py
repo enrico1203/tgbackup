@@ -57,6 +57,7 @@ class TelegramManager:
         # Piu job sullo stesso account si contenderebbero il tetto di 20 connessioni
         # per DC, rallentandosi a vicenda: la fase di upload viene serializzata.
         self._upload_locks: dict[int, asyncio.Semaphore] = {}
+        self._upload_limits: dict[int, int] = {}
 
     # Ciclo di vita
 
@@ -135,9 +136,20 @@ class TelegramManager:
             raise TelegramError("Account Telegram non collegato")
         return await self._connect(account)
 
-    def upload_lock(self, account_id: int) -> asyncio.Semaphore:
-        if account_id not in self._upload_locks:
-            self._upload_locks[account_id] = asyncio.Semaphore(1)
+    def upload_lock(self, account_id: int, limit: int = 2) -> asyncio.Semaphore:
+        """Semaforo che limita quanti job caricano insieme su questo account.
+
+        Se il limite cambia si crea un semaforo nuovo: i job che stanno gia
+        caricando rilasceranno quello vecchio, quindi per il tempo di una corsa la
+        concorrenza effettiva puo discostarsi dal valore appena impostato. E
+        preferibile a bloccare la modifica finche tutti i job non hanno finito, che
+        con corse di giorni vorrebbe dire non poterla mai cambiare.
+        """
+        limit = max(1, limit)
+        existing = self._upload_locks.get(account_id)
+        if existing is None or self._upload_limits.get(account_id) != limit:
+            self._upload_locks[account_id] = asyncio.Semaphore(limit)
+            self._upload_limits[account_id] = limit
         return self._upload_locks[account_id]
 
     # Login

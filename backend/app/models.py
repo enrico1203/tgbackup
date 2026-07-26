@@ -50,6 +50,11 @@ class TelegramAccount(Base):
     is_premium: Mapped[bool] = mapped_column(Boolean, default=False)
     default_part_size: Mapped[int] = mapped_column(BigInteger, default=1_900_000_000)
 
+    # Quanti job possono caricare insieme su questo account. Il tetto di 20
+    # connessioni per data center viene diviso fra loro, quindi alzare questo
+    # numero non aumenta la banda totale: distribuisce la stessa fra piu job.
+    max_concurrent_jobs: Mapped[int] = mapped_column(Integer, default=2)
+
     # pending_code, pending_password, connected, disconnected, error
     status: Mapped[str] = mapped_column(String(32), default="pending_code")
     last_error: Mapped[str | None] = mapped_column(Text)
