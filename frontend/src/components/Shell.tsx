@@ -6,11 +6,13 @@ import {
   Gauge,
   History,
   LogOut,
+  Menu,
   Moon,
   RefreshCcw,
   SlidersHorizontal,
   Sun,
   Users,
+  X,
 } from "lucide-react";
 
 import { useAuth } from "../lib/auth";
@@ -41,10 +43,31 @@ export default function Shell() {
   const { jobs, connected } = useProgress();
   const location = useLocation();
   const [theme, setTheme] = useState<Theme>(readTheme);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
     applyTheme(theme);
   }, [theme]);
+
+  // Cambiando pagina il menu si richiude da solo: su telefono resterebbe aperto
+  // sopra il contenuto appena scelto.
+  useEffect(() => {
+    setMenuOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenuOpen(false);
+    };
+    // Blocca lo scorrimento dietro al menu aperto.
+    document.body.classList.add("no-scroll");
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.classList.remove("no-scroll");
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen]);
 
   const running = jobs.size;
   const title =
@@ -52,7 +75,15 @@ export default function Shell() {
     (location.pathname.startsWith("/jobs/") ? "Dettaglio job" : "tgbackup");
 
   return (
-    <div className="shell">
+    <div className={menuOpen ? "shell menu-open" : "shell"}>
+      <button
+        type="button"
+        className="scrim"
+        aria-label="Chiudi il menu"
+        tabIndex={menuOpen ? 0 : -1}
+        onClick={() => setMenuOpen(false)}
+      />
+
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark">
@@ -103,6 +134,15 @@ export default function Shell() {
 
       <main className="main">
         <header className="topbar">
+          <button
+            type="button"
+            className="icon-btn menu-button"
+            aria-label={menuOpen ? "Chiudi il menu" : "Apri il menu"}
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((open) => !open)}
+          >
+            {menuOpen ? <X size={20} /> : <Menu size={20} />}
+          </button>
           <h1>{title}</h1>
           <div className="topbar-actions">
             {connected ? (
