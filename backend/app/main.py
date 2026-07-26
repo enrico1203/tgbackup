@@ -7,8 +7,8 @@ from sqlalchemy import select
 
 from .api import accounts, auth, dashboard, files, jobs, rclone, ws
 from .db import SessionLocal, engine
-from .migrate import ensure_schema
-from .models import Base, User
+from .migrate import upgrade_database
+from .models import User
 from .security import hash_password
 from .sync.progress import hub
 from .sync.scheduler import scheduler
@@ -39,9 +39,7 @@ async def seed_admin() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    async with engine.begin() as connection:
-        await ensure_schema(connection)
-        await connection.run_sync(Base.metadata.create_all)
+    await upgrade_database(engine)
     await seed_admin()
 
     # rclone wants a file: it is rewritten from the encrypted copy in the database at every start.

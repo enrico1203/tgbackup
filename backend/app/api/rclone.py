@@ -113,7 +113,9 @@ async def save_config(
     rclone.write_config(content)
 
     try:
-        remotes = await rclone.list_remotes()
+        # The return value does not matter: this runs to make rclone parse the file, so
+        # a broken configuration is refused now and not by a job at three in the morning.
+        await rclone.list_remotes()
     except rclone.RcloneError as exc:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, f"rclone rejects this configuration: {exc}"

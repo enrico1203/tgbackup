@@ -174,7 +174,7 @@ class LocalSliceReader:
         self._remaining = length
         self._handle: int | None = None
 
-    async def __aenter__(self) -> "LocalSliceReader":
+    async def __aenter__(self) -> LocalSliceReader:
         self._handle = await asyncio.to_thread(os.open, self._path, os.O_RDONLY)
         return self
 

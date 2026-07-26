@@ -35,6 +35,9 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.t
 
 WORKDIR /app
 COPY app ./app
+# The migrations travel with the code: the container upgrades its own database at start.
+COPY alembic.ini ./alembic.ini
+COPY alembic ./alembic
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import (
     BigInteger,
@@ -6,17 +6,17 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
-    Index,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class Base(DeclarativeBase):
@@ -60,7 +60,7 @@ class TelegramAccount(Base):
     last_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
-    channels: Mapped[list["Channel"]] = relationship(
+    channels: Mapped[list[Channel]] = relationship(
         back_populates="account", cascade="all, delete-orphan"
     )
 
@@ -140,7 +140,7 @@ class FileEntry(Base):
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
-    parts: Mapped[list["FilePart"]] = relationship(
+    parts: Mapped[list[FilePart]] = relationship(
         back_populates="file", cascade="all, delete-orphan", order_by="FilePart.part_index"
     )
 

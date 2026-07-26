@@ -11,7 +11,7 @@ import asyncio
 import logging
 import math
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, func, select
 from telethon.errors import FloodWaitError
@@ -526,7 +526,7 @@ async def execute_job(job_id: int, cancel: StopSignal) -> None:
             if not interrupted_by_shutdown:
                 # The interval starts from the end: a job running for three days does not
                 # pile up missed executions to catch up all at once.
-                job.next_run_at = datetime.now(timezone.utc) + timedelta(
+                job.next_run_at = datetime.now(UTC) + timedelta(
                     hours=job.interval_hours
                 )
             # If shutdown stopped it, next_run_at stays as it was: on restart the job

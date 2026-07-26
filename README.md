@@ -29,6 +29,40 @@ Photos and videos are always sent as documents, never as media: no recompression
 listed everything in 11.6 seconds against roughly 5 minutes walking a FUSE mount, and read at
 43.5 MB/s against 22 MB/s. Nothing is staged on disk.
 
+Both look the same to a sync job: split, deletion of what disappeared, re-upload of what changed and
+restore work identically whichever the source is.
+
+## Rclone remotes
+
+Any backend rclone supports can be a source, `crypt` included, without installing rclone yourself:
+the official static binary is in the image.
+
+**Configuration**: paste your `rclone.conf` in Settings. On save rclone reloads it and the remotes
+are listed right away, so a broken configuration is rejected instead of being discovered by a job at
+three in the morning. It is stored encrypted in the database with the key derived from `APP_SECRET`,
+and the database is the source of truth: the file on disk exists only because rclone wants a file,
+it is rewritten at every start with permissions `0600`, and it never leaves for the browser except
+when you press Edit.
+
+Edit the configuration keeps what is there and lets you fix or add a section; Rewrite from scratch
+starts from an empty box. Remove deletes it, and any job using a remote stops working.
+
+**Browsing**: pressing a remote in Settings opens a browser that walks the folders and shows the
+first entries of each, with the full path ready to copy. From the job form the Browse button does the
+same and Use this path fills the field. Reading stops at the first twenty entries, so opening a folder
+holding tens of thousands of files costs the same as opening an empty one.
+
+**In a job**: pick Rclone remote as the source and give a path in rclone's own form, `remote-name:`
+for the whole remote or `remote-name:subfolder` for part of it. The remote is contacted when the job
+is saved: if it does not answer, the job is not created.
+
+**During a run**: listing a large remote takes minutes, and the progress shows how many files have
+been found so far and where it is, instead of staying silent until the end. Files are then read in
+the exact byte ranges each Telegram part needs, straight from the stream to the upload.
+
+The timeouts on the rclone commands are safety nets against a remote that never answers, not limits
+on how much work is allowed: a full listing may take up to six hours, browsing and checks ten minutes.
+
 ## Setup
 
 ```bash
@@ -57,17 +91,52 @@ docker compose up -d --build
 The interface answers on `http://127.0.0.1:8081` and on the Cloudflare tunnel hostname.
 Initial credentials `admin` / `admin`, password change is mandatory on first sign in.
 
+## Updating
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+The database migrates itself. The backend runs the pending Alembic revisions at start, so a version
+that adds a column or an index needs nothing beyond the rebuild, and starting a version that changes
+nothing does nothing. Databases created before Alembic was introduced are adopted at the first start
+on the new version, with no dump and no reload.
+
+Migrations run before the interface answers: if one fails the backend does not start, and the reason
+is the last thing in `docker compose logs backend`.
+
 ## Usage
 
 1. **Telegram account**: link an account with the api_id and api_hash from `my.telegram.org`, then
    the phone number, the code you receive and, if enabled, the two-step password. The session stays
    valid until you disconnect the account.
 2. **Channels**: once linked, the account's private channels show up.
-3. **Settings**: to use an rclone remote, paste your `rclone.conf` here. It is stored encrypted.
+3. **Settings**: to use an rclone remote, paste your `rclone.conf` here. It is stored encrypted, and
+   the remotes it declares can be browsed from the same page.
 4. **Sync jobs**: pick the source (local folder or rclone remote), the account, the channel, how
    often to run and the scan rate. The job starts on its own, or with Run now.
 5. **Files and restore**: everything tracked, grouped by channel, with parts and message ids linking
    straight to Telegram. Restore rebuilds a file into `data/restore/`.
+
+## Checks
+
+Every push and pull request runs two GitHub Actions workflows.
+
+`CI` lints the backend with Ruff, type-checks and builds the frontend, builds both images, and boots
+the backend on an empty data directory to confirm it answers and reaches the latest schema revision.
+It starts it a second time to confirm the migrations are idempotent. It runs `alembic check`, which
+fails when a model has changed and no revision was written, and it applies the migrations to a
+database seeded with rows, because SQLite accepts on an empty table plenty of things it refuses on a
+full one.
+
+`Vulnerability scan` runs Trivy over the dependency manifests, the Dockerfiles and both built
+images, and repeats every Monday because advisories appear against code that has not changed. All
+findings land in the Security tab; the build fails only on the serious ones that already have a fix
+available. Exceptions live in `.trivyignore`, each with a reason and an expiry date.
+
+There is no test suite. Nothing here asserts what a job does with a file, which would need a real
+Telegram account and a real remote.
 
 ## Technical documentation
 

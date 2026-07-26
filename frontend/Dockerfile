@@ -1,8 +1,10 @@
 FROM node:26-alpine AS builder
 
 WORKDIR /app
-COPY package.json ./
-RUN npm install
+# npm ci and not npm install: it installs exactly the lockfile, so the image built today
+# and the one built in six months contain the same dependency tree.
+COPY package.json package-lock.json ./
+RUN npm ci
 
 COPY tsconfig.json vite.config.ts index.html ./
 COPY src ./src

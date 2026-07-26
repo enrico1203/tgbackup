@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select, update
 
@@ -37,7 +37,7 @@ class Scheduler:
             await session.execute(
                 update(JobRun)
                 .where(JobRun.status == "running")
-                .values(status="stopped", finished_at=datetime.now(timezone.utc))
+                .values(status="stopped", finished_at=datetime.now(UTC))
             )
             await session.commit()
 
@@ -82,7 +82,7 @@ class Scheduler:
         return True
 
     async def _tick(self) -> None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         async with SessionLocal() as session:
             result = await session.execute(
                 select(SyncJob).where(
@@ -132,7 +132,7 @@ class Scheduler:
 
 
 def _as_utc(value: datetime) -> datetime:
-    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 scheduler = Scheduler()

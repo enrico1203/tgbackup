@@ -93,7 +93,9 @@ async def scan(
     disk is not saturated when the folder sits on slow storage or is shared with other
     workloads.
     """
-    if not os.path.isdir(root):
+    # In a thread like the walk that follows: on a network mount a stat can hang, and
+    # the scheduler must stay responsive for the other jobs.
+    if not await asyncio.to_thread(os.path.isdir, root):
         raise FileNotFoundError(f"Folder {root} does not exist inside the container")
 
     files = await asyncio.to_thread(_walk, root, on_progress)

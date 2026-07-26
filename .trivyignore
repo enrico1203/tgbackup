@@ -1,0 +1,23 @@
+# Findings that must not fail the build, each with a reason and a date.
+#
+# This file is applied only to the steps that fail the pipeline. The scans that publish
+# to the Security tab do not use it, so an entry here hides nothing: it says that the
+# finding is known and cannot be acted on today.
+#
+# An entry without exp: never expires and does not belong here. The date is what forces
+# somebody to look again.
+
+# gRPC-Go: xDS RBAC and HTTP/2 vulnerabilities, in google.golang.org/grpc v1.80.0 as
+# statically linked into the official rclone binary. Fixed in grpc 1.82.1, but rclone
+# 1.74.4 of 2026-07-08 is the latest release and still ships the old one: there is no
+# version of rclone to move to.
+#
+# It does not apply to how rclone is used here. The advisory affects a gRPC server that
+# accepts connections and enforces xDS RBAC policies, which is rclone's rc daemon
+# (rclone rcd, rclone serve). This project only ever starts one-shot subprocesses,
+# version, listremotes, lsjson and cat, from backend/app/rclone/client.py. No socket is
+# opened and no gRPC code runs at all.
+#
+# Recheck when a new rclone is released: if it links grpc 1.82.1 or later, bump
+# RCLONE_VERSION in backend/Dockerfile and delete these lines.
+GHSA-hrxh-6v49-42gf exp:2026-10-31

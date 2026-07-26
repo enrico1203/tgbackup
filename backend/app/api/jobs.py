@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 from fastapi import APIRouter, HTTPException, status
@@ -98,7 +99,9 @@ async def _validate(
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST, "Give the local folder to synchronise"
             )
-        if not os.path.isdir(local_path):
+        # In a thread: the folder can sit on a network mount, where a stat on a server
+        # that has stopped answering would block the event loop for the whole timeout.
+        if not await asyncio.to_thread(os.path.isdir, local_path):
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
                 f"Folder {local_path} does not exist inside the container. "
@@ -119,12 +122,18 @@ async def create_job(payload: JobIn, session: SessionDep, _: ActiveUserDep) -> J
     )
     account = await session.get(TelegramAccount, payload.account_id)
 
+    local_path = ""
+    if payload.source_type == "local":
+        # The trailing slash is dropped so the same folder written two ways gives one
+        # path, except for the root, which is only a slash.
+        local_path = payload.local_path.rstrip("/") or "/"
+
     job = SyncJob(
         name=payload.name,
         account_id=payload.account_id,
         channel_id=payload.channel_id,
         source_type=payload.source_type,
-        local_path=(payload.local_path.rstrip("/") or "/") if payload.source_type == "local" else "",
+        local_path=local_path,
         remote=payload.remote.strip() if payload.remote else None,
         interval_hours=payload.interval_hours,
         scan_files_per_sec=payload.scan_files_per_sec,

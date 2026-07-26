@@ -23,6 +23,10 @@ from .progress import RestoreProgress, hub
 
 log = logging.getLogger(__name__)
 
+# The event loop keeps only a weak reference to a running task: without a strong one
+# here, a restore in progress can be collected halfway through and stop with no trace.
+_running: set[asyncio.Task] = set()
+
 
 async def restore_file(file_id: int) -> str:
     """Starts the restore and returns the identifier used to follow it."""
@@ -61,10 +65,12 @@ async def restore_file(file_id: int) -> str:
     )
     hub.start_restore(progress)
 
-    asyncio.create_task(
+    task = asyncio.create_task(
         _run_restore(progress, account_id, peer, parts, target),
         name=f"restore-{restore_id}",
     )
+    _running.add(task)
+    task.add_done_callback(_running.discard)
     return restore_id
 
 

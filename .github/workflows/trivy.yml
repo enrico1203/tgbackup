@@ -1,0 +1,128 @@
+name: Vulnerability scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # New advisories land against code that has not changed, so the scan repeats on its
+  # own. Monday morning, before the week starts.
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: trivy-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  dependencies:
+    name: Dependencies and configuration
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Findings go to the Security tab rather than only into a log nobody reads.
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+
+      # Reads requirements.txt and package-lock.json for known vulnerable versions, the
+      # Dockerfiles and the compose file for insecure settings, and the whole tree for
+      # committed credentials. This is the only step that would notice an api_hash or a
+      # rclone.conf reaching the repository, which is now public.
+      - name: Scan the repository
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scanners: vuln,secret,misconfig
+          format: sarif
+          output: trivy-fs.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+        env:
+          TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db
+
+      - name: Publish to code scanning
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-filesystem
+
+      # The SARIF upload records findings without stopping anyone. This step is the one
+      # that fails, and only on what is both serious and actually fixable today: a
+      # vulnerability with no released fix would otherwise block every pull request
+      # until someone else publishes a patch.
+      - name: Fail on fixable critical findings
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scanners: vuln,secret
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          trivyignores: .trivyignore
+        env:
+          TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db
+
+  images:
+    name: Image ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: backend
+            context: ./backend
+          - name: frontend
+            context: ./frontend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      # The image carries more than the manifests do: the Alpine packages, the Python
+      # interpreter, the rclone binary and nginx. A base image that has gone stale shows
+      # up here and nowhere else.
+      - name: Build ${{ matrix.name }}
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          load: true
+          tags: tgbackup-${{ matrix.name }}:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan ${{ matrix.name }}
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: tgbackup-${{ matrix.name }}:scan
+          format: sarif
+          output: trivy-${{ matrix.name }}.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+        env:
+          TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db
+
+      - name: Publish to code scanning
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-${{ matrix.name }}.sarif
+          category: trivy-image-${{ matrix.name }}
+
+      - name: Fail on fixable critical findings
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: tgbackup-${{ matrix.name }}:scan
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          trivyignores: .trivyignore
+        env:
+          TRIVY_DB_REPOSITORY: public.ecr.aws/aquasecurity/trivy-db

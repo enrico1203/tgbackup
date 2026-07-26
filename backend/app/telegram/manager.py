@@ -58,6 +58,9 @@ class TelegramManager:
         # connections per data center: the upload phase is serialized.
         self._upload_locks: dict[int, asyncio.Semaphore] = {}
         self._upload_limits: dict[int, int] = {}
+        # The event loop holds only a weak reference to a running task. Without a strong
+        # one the disconnect of an expired sign-in could be collected before it runs.
+        self._sweeping: set[asyncio.Task] = set()
 
     # Lifecycle
 
@@ -158,7 +161,9 @@ class TelegramManager:
         now = time.monotonic()
         for account_id, pending in list(self._pending.items()):
             if now - pending.created_at > PENDING_TTL_SECONDS:
-                asyncio.create_task(self._drop_pending(account_id))
+                task = asyncio.create_task(self._drop_pending(account_id))
+                self._sweeping.add(task)
+                task.add_done_callback(self._sweeping.discard)
 
     async def _drop_pending(self, account_id: int) -> None:
         pending = self._pending.pop(account_id, None)

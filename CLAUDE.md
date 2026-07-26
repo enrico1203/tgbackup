@@ -11,7 +11,10 @@ commit messages, documentation. No exceptions, including when the request that t
 was written in another language.
 
 **No test environment.** No test suite, no staging. Production code is written directly and put in
-execution. Do not waste time trying things out: just write it.
+execution. Do not waste time trying things out: just write it. CI does not contradict this: it
+builds, type-checks, lints and boots the backend, and it runs the migrations against a database
+that already holds rows. It asserts nothing about what a job does with a file, because that would
+need Telegram and a remote.
 
 **No emoji.** Nowhere: interface, code, comments, logs, commits, documentation. Icons come from
 `lucide-react` (SVG).
@@ -29,24 +32,32 @@ backend and interrupts running jobs. Use `--no-deps`.
 
 ## Stack
 
-Backend: Python 3.14 Alpine, FastAPI, SQLAlchemy 2.0 async on SQLite, Telethon 1.44, cryptg,
-rclone 1.74 (official static binary).
+Backend: Python 3.14 Alpine, FastAPI, SQLAlchemy 2.0 async on SQLite, Alembic 1.18, Telethon 1.44,
+cryptg, rclone 1.74 (official static binary).
 Frontend: React 19, Vite 8, TypeScript 7, react-router 8, TanStack Query 5, lucide-react.
 Infra: docker compose with `backend`, `frontend` (nginx), `cloudflared`.
+CI: GitHub Actions, Ruff 0.16 for the backend, Trivy for vulnerabilities.
 
 ## Layout
 
 ```
-backend/app/
-  config.py db.py models.py schemas.py security.py deps.py migrate.py main.py
-  api/       auth accounts jobs files dashboard rclone ws
-  telegram/  manager.py (client registry, peers) fast_transfer.py (parallel upload/download)
-  rclone/    client.py (lsjson, ranged cat, preview)
-  sync/      source.py scanner.py runner.py scheduler.py restore.py progress.py
+backend/
+  alembic.ini
+  alembic/    env.py versions/ (0001_baseline.py, ...)
+  app/
+    config.py db.py models.py schemas.py security.py deps.py migrate.py main.py
+    api/       auth accounts jobs files dashboard rclone ws
+    telegram/  manager.py (client registry, peers) fast_transfer.py (parallel upload/download)
+    rclone/    client.py (streaming lsjson, ranged cat, preview, config on disk)
+    sync/      source.py scanner.py runner.py scheduler.py restore.py progress.py
 frontend/src/
   pages/     Login ChangePassword Dashboard Jobs Accounts Files Runs Settings
   components/ Shell ui JobActivity RemoteBrowser
   lib/       api auth progress types format theme
+.github/
+  workflows/ ci.yml trivy.yml
+  scripts/   check_migrations.py
+ruff.toml .trivyignore
 ```
 
 ## Key concepts
@@ -74,6 +85,35 @@ total bandwidth, it spreads the same bandwidth across more jobs.
 remote with 12 TB and 16,709 files: listing 11.6 s against roughly 5 minutes walking the FUSE mount,
 reading 43.5 MB/s against 22 MB/s. No disk staging. Verified that bytes read through `cat` are
 identical to those read from the mount.
+
+**lsjson read as a stream**: `_stream_lsjson` parses one object per line as it arrives instead of
+waiting for the whole array. Two consequences. With `max_items` the process is killed as soon as
+there are enough entries, so `check_remote` (1 entry) and `preview` (20) cost the same on a folder
+with 200,000 files as on an empty one; the non-zero exit that follows the kill is expected and must
+not be treated as an error. With `on_item` and no `max_items` the caller collects while reading, and
+the job scan reports files found and current folder as it goes. Nothing is kept twice: when the
+caller collects through `on_item`, the internal list stays empty. `preview` sorts only what it
+received, folders first, and this is deliberately not a global sort of the folder.
+
+**rclone timeouts** (`config.py`): they are safety nets against a remote that never answers, not work
+limits. `rclone_list_timeout` is 6 h because a full listing legitimately takes that long, check and
+preview 10 min although they stop on their own long before.
+
+**rclone.conf lifecycle**: the database is the source of truth. The file on disk exists only because
+rclone wants a file: it is rewritten from the encrypted row at every startup (`main.py`) and chmod
+`0600`. Saving from the interface validates by running `listremotes` right after writing, so a broken
+configuration is rejected at save time rather than at three in the morning by a job. `check_remote`
+runs again when a job is created or its source changes.
+
+**`RemoteSliceReader.read` loops**: `StreamReader.read(n)` returns whatever it has at that moment,
+which on a network pipe is almost always less than asked. Without the loop that fills the buffer,
+short parts would go to Telegram, and every part but the last must be full. On exit a non-zero return
+code only counts when fewer bytes were read than requested: closing early after having everything is
+normal.
+
+**rclone stderr is rewritten before being shown**: lines arrive as
+`2026/07/25 22:10:43 ERROR : message`; date, level and the `Failed to x:` prefix say nothing to the
+user and hide the actual message, so `_clean_error` strips them, dedupes and truncates to 400 chars.
 
 **Telegram peers**: built from the stored `tg_id` plus `access_hash`, never resolved with
 `get_entity` on a numeric id. A bare positive integer is read as a user, and `StringSession` does not
@@ -113,8 +153,40 @@ that was never defined reached production. `build` now runs `tsc --noEmit` first
 **The CSS target is pinned**: without it the minifier rewrites media queries into range syntax, which
 Safari only understands from 16.4, and on an older phone the whole mobile layout would be ignored.
 
-**Schema migration at startup**: `create_all` does not add columns to existing tables, so
-`migrate.py` compares models against the schema and issues the missing `ALTER TABLE`.
+**Alembic owns the schema** (since 2026-07-26). `create_all` never added columns to existing
+tables, and the `ALTER TABLE` loop that replaced it could only ever add them: a rename, a type
+change or a new index had no way through. `upgrade_database` in `migrate.py` runs
+`alembic upgrade head` at every start, so deploying is migrating. Databases that predate Alembic
+have no `alembic_version`: they are aligned by `ensure_schema`, the old loop, kept for exactly this,
+and then stamped `0001`. Verified on a copy of the real database, 30,287 file rows, adopted and
+upgraded without losing one.
+
+**Autogenerate fills in `server_default` by itself**: `default=` in the models is applied by
+SQLAlchemy when it builds the INSERT, so it leaves no trace in the DDL and Alembic cannot see it.
+The generated revision would say `ADD COLUMN ... NOT NULL` with no default, which SQLite refuses on
+a table that has rows, that is on the only database that matters. `process_revision_directives` in
+`alembic/env.py` reads the model default and renders it as a DDL default. When there is no constant
+default it raises, while the revision is being written, rather than letting the backend fail to
+start on the next deploy.
+
+**`render_as_batch` is on**: SQLite cannot alter a column in place, batch mode rebuilds the table
+around the change. Without it anything beyond ADD COLUMN fails.
+
+**CI checks, it does not test**: `ci.yml` lints the backend with Ruff, type-checks and builds the
+frontend, builds both images, boots the backend twice against an empty data directory and asserts
+the database reaches head, runs `alembic check` so a model change without a revision fails, and
+runs `.github/scripts/check_migrations.py`, which seeds one row into every table before upgrading
+because a migration that only ever ran on an empty database has proved nothing.
+
+**Only `ruff check`, never `ruff format`**: formatting the existing code would have produced a 310
+line diff across files nobody was touching. The lint rules are in `ruff.toml`, `ASYNC109` is off on
+purpose, the generated revisions are excluded.
+
+**Trivy fails only on what can be fixed**: every finding goes to the Security tab as SARIF, but the
+step that fails the build passes `--ignore-unfixed` and `.trivyignore`. A vulnerability with no
+released fix would otherwise block every pull request until an upstream project acts. Entries in
+`.trivyignore` carry a reason and an expiry date, and the gating steps are the only ones that read
+it, so nothing is hidden from the Security tab.
 
 ## Commands
 
@@ -128,6 +200,33 @@ docker compose up -d --no-deps backend    # without touching the other services
 Access: `http://127.0.0.1:8081` or the Cloudflare tunnel hostname.
 Initial credentials `admin` / `admin`, password change is mandatory on first sign in.
 
+## Changing the schema
+
+Edit the models, then generate the revision. It is generated in a throwaway container against a
+temporary database, never against the real one:
+
+```
+docker compose build backend
+docker run --rm -v "$PWD/backend:/app" -w /app -e DATA_DIR=/tmp/gen tgbackup-backend sh -c \
+  'mkdir -p /tmp/gen && alembic upgrade head &&
+   alembic revision --autogenerate --rev-id 0002 -m "what changed"'
+```
+
+Two things that are not optional. `alembic upgrade head` first, because autogenerate refuses to
+compare against a database that is not already at head. And `--rev-id`, the next free number:
+without it the revision gets a hash and the directory listing stops reading as a history.
+
+Read the generated file, it is a draft and not a result, then deploy with
+`docker compose up -d --no-deps --build backend`. The container migrates itself at start.
+
+Locally, the same checks CI runs:
+
+```
+docker run --rm -v "$PWD:/w" -w /w ghcr.io/astral-sh/ruff:0.16.0 check backend/
+docker run --rm -v "$PWD/.github/scripts:/scripts:ro" -e DATA_DIR=/tmp/data \
+  tgbackup-backend python /scripts/check_migrations.py
+```
+
 ## Adding a source
 
 **Local folder**: a volume in `docker-compose.yml`, service `backend`, as
@@ -136,4 +235,6 @@ job path is the one inside the container.
 
 **rclone remote**: paste the `rclone.conf` in Settings, then in the job pick Rclone remote and give
 `remote-name:` or `remote-name:subfolder`. The Browse button opens the remote browser, from which the
-path can be copied or applied directly.
+path can be copied or applied directly. No container restart and no volume: the configuration is
+reloaded on save and the remote is contacted when the job is saved, so an unreachable path fails
+immediately.

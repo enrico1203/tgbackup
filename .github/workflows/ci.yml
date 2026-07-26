@@ -1,0 +1,175 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push supersedes the run already going on the same branch.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend-lint:
+    name: Backend lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/ruff-action@v4
+        with:
+          version: 0.16.0
+          args: check backend/
+
+  frontend:
+    name: Frontend typecheck and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        working-directory: frontend
+        run: npm ci
+
+      # vite build transpiles without checking types, which is how an api.put that was
+      # never defined once reached production. npm run build runs tsc --noEmit first.
+      - name: Typecheck and build
+        working-directory: frontend
+        run: npm run build
+
+  images:
+    name: Build images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build backend
+        uses: docker/build-push-action@v7
+        with:
+          context: ./backend
+          load: true
+          tags: tgbackup-backend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build frontend
+        uses: docker/build-push-action@v7
+        with:
+          context: ./frontend
+          load: true
+          tags: tgbackup-frontend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Save backend image
+        run: docker save tgbackup-backend:ci -o /tmp/backend.tar
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: backend-image
+          path: /tmp/backend.tar
+          retention-days: 1
+
+  migrations:
+    name: Migrations
+    runs-on: ubuntu-latest
+    needs: images
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: backend-image
+          path: /tmp
+
+      - name: Load backend image
+        run: docker load -i /tmp/backend.tar
+
+      # The revisions must describe the models. A revision forgotten after a model
+      # change is the failure this catches: the schema would drift silently until an
+      # INSERT hit a column that does not exist.
+      - name: No model change is missing a revision
+        run: |
+          docker run --rm -e DATA_DIR=/tmp/data tgbackup-backend:ci sh -c '
+            mkdir -p /tmp/data
+            alembic upgrade head
+            alembic check
+          '
+
+      # Migrations have to work on a database that already holds rows, not only on the
+      # empty one a fresh install starts from. SQLite refuses ADD COLUMN NOT NULL
+      # without a default on a non-empty table, and that only shows up here.
+      - name: Upgrade a populated database
+        run: |
+          docker run --rm -v "$PWD/.github/scripts:/scripts:ro" -e DATA_DIR=/tmp/data \
+            tgbackup-backend:ci python /scripts/check_migrations.py
+
+  smoke:
+    name: Smoke test
+    runs-on: ubuntu-latest
+    needs: images
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: backend-image
+          path: /tmp
+
+      - name: Load backend image
+        run: docker load -i /tmp/backend.tar
+
+      - name: Boot the backend on an empty data directory
+        run: |
+          mkdir -p /tmp/data
+          docker run -d --name tgbackup -p 8000:8000 \
+            -v /tmp/data:/data -e DATA_DIR=/data -e APP_SECRET=ci-only-secret \
+            tgbackup-backend:ci
+
+      - name: Wait for the health endpoint
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8000/api/health; then
+              echo && echo "backend up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "backend did not answer in two minutes"
+          docker logs tgbackup
+          exit 1
+
+      - name: The database is at head
+        run: |
+          docker exec tgbackup alembic current | tee /tmp/current
+          grep -q '(head)' /tmp/current
+
+      # The same container starting again must find nothing to do. A migration that is
+      # not idempotent would fail here rather than on the second deploy.
+      - name: Restart and check again
+        run: |
+          docker restart tgbackup
+          for _ in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8000/api/health; then
+              echo && echo "backend up again"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs tgbackup
+          exit 1
+
+      - name: Backend log
+        if: always()
+        run: docker logs tgbackup

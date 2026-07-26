@@ -1,6 +1,6 @@
 import base64
 import hashlib
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import jwt
 from argon2 import PasswordHasher
@@ -45,7 +45,7 @@ def decrypt(value: str) -> str:
 
 
 def create_token(user_id: int) -> str:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     payload = {
         "sub": str(user_id),
         "iat": int(now.timestamp()),

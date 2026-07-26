@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import func, select
 
 from ..deps import ActiveUserDep, SessionDep
-from ..models import Channel, SyncJob, TelegramAccount
+from ..models import Channel, SyncJob, TelegramAccount, utcnow
 from ..schemas import (
     AccountCodeIn,
     AccountOut,
@@ -14,7 +14,6 @@ from ..schemas import (
 )
 from ..security import encrypt
 from ..telegram.manager import TelegramError, manager
-from ..models import utcnow
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 

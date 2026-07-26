@@ -2,10 +2,9 @@ from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select
 
 from ..deps import SessionDep, UserDep
-from ..models import User
+from ..models import User, utcnow
 from ..schemas import ChangePasswordIn, LoginIn, MeOut, TokenOut
 from ..security import create_token, hash_password, verify_password
-from ..models import utcnow
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
