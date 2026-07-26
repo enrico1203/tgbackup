@@ -258,6 +258,63 @@ class RemotePreviewOut(BaseModel):
     error: str | None = None
 
 
+# Export and import of a channel
+
+
+class ExportChannelOut(BaseModel):
+    channel_id: int
+    tg_id: int
+    title: str
+    account_id: int
+    account_label: str
+    jobs: int
+    files: int
+    parts: int
+    bytes_total: int
+
+
+class ImportJobPreview(BaseModel):
+    name: str
+    source_type: str
+    source: str
+    files: int
+    parts: int
+    bytes_total: int
+
+
+class ImportPreviewOut(BaseModel):
+    exported_at: str | None
+    account_label: str
+    account_tg_user_id: int | None
+    channel_tg_id: int
+    channel_title: str
+    channel_username: str | None
+    jobs: list[ImportJobPreview]
+    files: int
+    parts: int
+    bytes_total: int
+
+
+class ImportJobResult(BaseModel):
+    name: str
+    # created or merged
+    action: str
+    files_imported: int
+    files_skipped: int
+    parts_imported: int
+
+
+class ImportResultOut(BaseModel):
+    channel_id: int
+    channel_title: str
+    channel_created: bool
+    jobs: list[ImportJobResult]
+    files_imported: int
+    files_skipped: int
+    parts_imported: int
+    warnings: list[str]
+
+
 # Dashboard
 
 

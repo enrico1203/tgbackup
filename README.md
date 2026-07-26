@@ -17,6 +17,8 @@ the modified ones, and can reassemble files that were split into parts.
   twice concurrently, even when a run takes days.
 - **Live progress**: upload speed, remaining files and estimated time over a WebSocket.
 - **Restore**: downloads all the parts and rebuilds the original file.
+- **Export and import**: the index of a channel travels to another machine in one file, so that
+  machine can restore everything the channel holds.
 
 Photos and videos are always sent as documents, never as media: no recompression.
 
@@ -118,6 +120,36 @@ is the last thing in `docker compose logs backend`.
    often to run and the scan rate. The job starts on its own, or with Run now.
 5. **Files and restore**: everything tracked, grouped by channel, with parts and message ids linking
    straight to Telegram. Restore rebuilds a file into `data/restore/`.
+6. **Export**: moves a channel to another installation.
+
+## Moving a channel to another machine
+
+The files live on Telegram, the knowledge of what is up there lives in this database. Export carries
+that knowledge across, one channel at a time.
+
+On the machine that has the channel, open Export, press Export next to it and keep the
+`.json.gz` file. It holds the channel coordinates, the jobs writing to it and, for every file, its
+path, size, modification time and the message ids of its parts. It holds no file content and no
+Telegram credentials: 2,500 files with 7,500 parts weigh 65 KB.
+
+On the other machine, link the Telegram account that is a member of that channel, then open Export,
+choose the file and press Import. The file is read first and shows what it holds before anything is
+written.
+
+Two things to know.
+
+**The imported jobs arrive disabled, on purpose.** Their source is a path on the machine they came
+from. Point each one at the right folder or remote before enabling it: a job whose source exists but
+holds something else sees every file as removed and empties the channel on its first run. If all you
+want is to restore, leave them disabled and use Files and restore, which needs no run at all.
+
+**The Telegram account matters.** The permission to read a channel is issued per account, so the
+import wants an account that is a member of it, ideally the same one. If it is connected the channel
+is verified against Telegram there and then; if it is not, the import still goes through and says so.
+
+Importing the same file twice creates a second copy of the jobs. To take an updated export instead,
+tick "Merge into jobs with the same name": paths already known are left untouched and only the new
+ones are added.
 
 ## Checks
 

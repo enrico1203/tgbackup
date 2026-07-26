@@ -46,12 +46,13 @@ backend/
   alembic/    env.py versions/ (0001_baseline.py, ...)
   app/
     config.py db.py models.py schemas.py security.py deps.py migrate.py main.py
-    api/       auth accounts jobs files dashboard rclone ws
+    transfer.py (export and import of a channel index)
+    api/       auth accounts jobs files dashboard export rclone ws
     telegram/  manager.py (client registry, peers) fast_transfer.py (parallel upload/download)
     rclone/    client.py (streaming lsjson, ranged cat, preview, config on disk)
     sync/      source.py scanner.py runner.py scheduler.py restore.py progress.py
 frontend/src/
-  pages/     Login ChangePassword Dashboard Jobs Accounts Files Runs Settings
+  pages/     Login ChangePassword Dashboard Jobs Accounts Files Runs Export Settings
   components/ Shell ui JobActivity RemoteBrowser
   lib/       api auth progress types format theme
 .github/
@@ -129,6 +130,22 @@ scanning and cleanup run in parallel, and queued jobs show a `waiting` phase.
 middle of a large file leaves no orphan messages: on the next scan the file goes through `stale`, the
 already sent parts are deleted from the channel and the file restarts clean.
 
+**Channel export** (`transfer.py`, Export section): one channel at a time, index only. The file
+is gzipped JSON holding the channel coordinates, the jobs writing to it and, per file, the identity
+triple plus the message ids of the parts, which is exactly what a restore needs. 2,500 files with
+7,500 parts compress to 65 KB. It carries no session and no `api_hash`: the other machine signs the
+account in itself. Import links the channel to an account of the target instance, in `create` mode
+(a new job per exported job) or `merge` mode (matches an existing job by name on that channel and
+inserts only the paths it does not have, so re-importing the same file changes nothing). Files
+inserted in bulk, ids read back once per job rather than one round trip per row. Uploads arrive as
+multipart, which is why `client_max_body_size` in `nginx.conf` is 64 MB and no longer 1.
+
+**`access_hash` does not travel well**: it is issued per user, so the exported one is only valid if
+the import lands on the same Telegram account. On import the value is taken from the target
+account's own dialog list when it is reachable, and the exported one is the fallback. Both the
+mismatch and the failure to verify are reported as warnings on the import result rather than
+blocking it: the index is worth having even when the channel cannot be checked right then.
+
 **Secrets**: `api_hash`, Telegram sessions and `rclone.conf` are encrypted with Fernet derived from
 `APP_SECRET`. Changing `APP_SECRET` makes them unreadable. The `rclone.conf` is returned in clear to
 the browser only from `GET /api/rclone/content`, that is only when Edit is pressed.
@@ -187,6 +204,15 @@ step that fails the build passes `--ignore-unfixed` and `.trivyignore`. A vulner
 released fix would otherwise block every pull request until an upstream project acts. Entries in
 `.trivyignore` carry a reason and an expiry date, and the gating steps are the only ones that read
 it, so nothing is hidden from the Security tab.
+
+**Imported jobs arrive disabled, and their name is kept as exported** (since 2026-07-26). The
+source of an imported job belongs to the machine that produced the export. If that path does not
+exist here the run fails cleanly, but if it exists and holds something else, the diff sees every
+known file as removed and the first run deletes the whole channel message by message. Enabling is
+left to the user, after the source has been pointed at the right place. The name is not decorated
+with an "(imported)" suffix either, however tempting: `merge` matches jobs by name, so a rename
+would make a second import of the same file miss the job the first one created and duplicate
+everything.
 
 **AGPL-3.0, chosen 2026-07-26**. This is a self-hosted network application, which is the case the
 Affero clause exists for: with plain GPL somebody could run a modified version as a hosted service

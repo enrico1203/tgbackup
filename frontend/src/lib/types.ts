@@ -150,6 +150,59 @@ export interface RestoreOut {
   target_path: string;
 }
 
+export interface ExportChannel {
+  channel_id: number;
+  tg_id: number;
+  title: string;
+  account_id: number;
+  account_label: string;
+  jobs: number;
+  files: number;
+  parts: number;
+  bytes_total: number;
+}
+
+export interface ImportJobPreview {
+  name: string;
+  source_type: string;
+  source: string;
+  files: number;
+  parts: number;
+  bytes_total: number;
+}
+
+export interface ImportPreview {
+  exported_at: string | null;
+  account_label: string;
+  account_tg_user_id: number | null;
+  channel_tg_id: number;
+  channel_title: string;
+  channel_username: string | null;
+  jobs: ImportJobPreview[];
+  files: number;
+  parts: number;
+  bytes_total: number;
+}
+
+export interface ImportJobResult {
+  name: string;
+  action: string;
+  files_imported: number;
+  files_skipped: number;
+  parts_imported: number;
+}
+
+export interface ImportResult {
+  channel_id: number;
+  channel_title: string;
+  channel_created: boolean;
+  jobs: ImportJobResult[];
+  files_imported: number;
+  files_skipped: number;
+  parts_imported: number;
+  warnings: string[];
+}
+
 export interface Dashboard {
   accounts: number;
   accounts_connected: number;

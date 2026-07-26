@@ -8,6 +8,7 @@ import {
   LogOut,
   Menu,
   Moon,
+  PackageOpen,
   RefreshCcw,
   SlidersHorizontal,
   Sun,
@@ -26,6 +27,7 @@ const NAV = [
   { to: "/accounts", label: "Telegram accounts", icon: Users, end: false },
   { to: "/files", label: "Files and restore", icon: Archive, end: false },
   { to: "/runs", label: "History", icon: History, end: false },
+  { to: "/export", label: "Export", icon: PackageOpen, end: false },
   { to: "/settings", label: "Settings", icon: SlidersHorizontal, end: false },
 ];
 
@@ -35,6 +37,7 @@ const TITLES: Record<string, string> = {
   "/accounts": "Telegram accounts",
   "/files": "Files and restore",
   "/runs": "Run history",
+  "/export": "Export and import",
   "/settings": "Settings",
 };
 

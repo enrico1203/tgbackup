@@ -6,6 +6,7 @@ import { ProgressProvider } from "./lib/progress";
 import Accounts from "./pages/Accounts";
 import ChangePassword from "./pages/ChangePassword";
 import Dashboard from "./pages/Dashboard";
+import Export from "./pages/Export";
 import Files from "./pages/Files";
 import Jobs from "./pages/Jobs";
 import Login from "./pages/Login";
@@ -40,6 +41,7 @@ export default function App() {
             <Route path="accounts" element={<Accounts />} />
             <Route path="files" element={<Files />} />
             <Route path="runs" element={<Runs />} />
+            <Route path="export" element={<Export />} />
             <Route path="settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
