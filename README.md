@@ -141,3 +141,18 @@ Telegram account and a real remote.
 ## Technical documentation
 
 Implementation choices, protocol constraints and project rules are in `CLAUDE.md`.
+
+## License
+
+GNU Affero General Public License v3.0, in `LICENSE`.
+
+Copyright (C) 2026 Enrico, <https://github.com/enrico1203>
+
+Use it, run it, change it, for yourself or inside your organisation, with nothing asked in return.
+The one obligation appears when you pass it on: if you distribute a modified version, or let other
+people use one over a network, that version's source has to be available to them under this same
+licence. Running the stock version for yourself, which is what this project is for, carries no
+obligation at all.
+
+The dependencies are all permissive, MIT, BSD, Apache 2.0, ISC and CC0, so they are free to be used
+here. That works in one direction only: code from this project cannot be moved into a closed one.

@@ -188,6 +188,15 @@ released fix would otherwise block every pull request until an upstream project 
 `.trivyignore` carry a reason and an expiry date, and the gating steps are the only ones that read
 it, so nothing is hidden from the Security tab.
 
+**AGPL-3.0, chosen 2026-07-26**. This is a self-hosted network application, which is the case the
+Affero clause exists for: with plain GPL somebody could run a modified version as a hosted service
+and owe nothing, since they would never be distributing it. The comparable projects settled the same
+way, Immich, Nextcloud and Mastodon are all AGPL-3.0. Every dependency is permissive, MIT, BSD,
+Apache 2.0, ISC and CC0, so nothing forced the choice and nothing conflicts with it. Compatibility
+runs one way: permissive code can come in, this code cannot go into a closed project. As sole
+copyright holder the licence can still be changed or dual-licensed later, but only for versions not
+yet published.
+
 ## Commands
 
 ```
