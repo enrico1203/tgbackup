@@ -406,7 +406,7 @@ def _file_rows(job_id: int, files: list[dict]) -> tuple[list[dict], dict[str, li
     return rows, parts_by_path
 
 
-async def _insert_files(
+async def insert_files(
     session: AsyncSession, job_id: int, rows: list[dict], parts_by_path: dict[str, list[dict]]
 ) -> int:
     for start in range(0, len(rows), CHUNK):
@@ -512,7 +512,7 @@ async def import_payload(
                     path: parts for path, parts in parts_by_path.items() if path not in existing
                 }
 
-        parts_imported = await _insert_files(session, job.id, rows, parts_by_path)
+        parts_imported = await insert_files(session, job.id, rows, parts_by_path)
         results.append(
             {
                 "name": job.name,

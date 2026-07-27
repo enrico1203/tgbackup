@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, FileText, HardDrive, PencilLine, Trash2 } from "lucide-react";
+import { BellRing, CheckCircle2, FileText, HardDrive, PencilLine, Trash2 } from "lucide-react";
 
 import { api } from "../lib/api";
 import { formatDateTime } from "../lib/format";
-import type { RcloneStatus } from "../lib/types";
+import type { Account, NotifyPreferences, RcloneStatus } from "../lib/types";
 import RemoteBrowser from "../components/RemoteBrowser";
 import { Alert, Card, CardHead, Field, Pill, Spinner } from "../components/ui";
 
@@ -17,6 +17,103 @@ token = {"access_token":"..."}
 type = crypt
 remote = mycloud:folder
 password = ...`;
+
+function Notifications() {
+  const queryClient = useQueryClient();
+  const [events, setEvents] = useState<NotifyPreferences["events"] | null>(null);
+  const [accountId, setAccountId] = useState<number | null>(null);
+
+  const { data } = useQuery({
+    queryKey: ["notifications"],
+    queryFn: () => api.get<NotifyPreferences>("/api/preferences/notifications"),
+  });
+  const { data: accounts } = useQuery({
+    queryKey: ["accounts"],
+    queryFn: () => api.get<Account[]>("/api/accounts"),
+  });
+
+  const save = useMutation({
+    mutationFn: (payload: NotifyPreferences) =>
+      api.put<NotifyPreferences>("/api/preferences/notifications", payload),
+    onSuccess: (result) => {
+      queryClient.setQueryData(["notifications"], result);
+      setEvents(null);
+      setAccountId(null);
+    },
+  });
+
+  const currentEvents = events ?? data?.events ?? "off";
+  const currentAccount = accountId ?? data?.account_id ?? 0;
+  const dirty =
+    data !== undefined && (currentEvents !== data.events || currentAccount !== data.account_id);
+
+  return (
+    <Card>
+      <CardHead title="Notifications">
+        {currentEvents === "off" ? (
+          <Pill tone="mute">Off</Pill>
+        ) : (
+          <Pill tone="ok">
+            <BellRing size={11} />
+            {currentEvents === "errors" ? "Errors only" : "Every run"}
+          </Pill>
+        )}
+      </CardHead>
+
+      <div className="card-body">
+        <p style={{ margin: 0, color: "var(--muted)", maxWidth: "70ch" }}>
+          A report at the end of a run, sent to the Saved Messages of a Telegram account.
+          No webhook and no second service: it arrives where the backup already lives.
+        </p>
+
+        {save.isError ? <Alert>{(save.error as Error).message}</Alert> : null}
+
+        <div className="grid-2">
+          <Field label="When to send" hint="Errors also covers a run that left files behind.">
+            <select
+              value={currentEvents}
+              onChange={(event) => setEvents(event.target.value as NotifyPreferences["events"])}
+            >
+              <option value="off">Never</option>
+              <option value="errors">Only on errors</option>
+              <option value="all">At the end of every run</option>
+            </select>
+          </Field>
+
+          <Field
+            label="Account that sends them"
+            hint="With no choice, each job reports through its own account."
+          >
+            <select
+              value={currentAccount}
+              disabled={currentEvents === "off"}
+              onChange={(event) => setAccountId(Number(event.target.value))}
+            >
+              <option value={0}>The account of the job</option>
+              {(accounts ?? []).map((account) => (
+                <option key={account.id} value={account.id}>
+                  {account.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+
+        <div className="row">
+          <button
+            type="button"
+            className="btn"
+            disabled={!dirty || save.isPending}
+            onClick={() => save.mutate({ events: currentEvents, account_id: currentAccount })}
+          >
+            {save.isPending ? <Spinner /> : null}
+            Save
+          </button>
+        </div>
+      </div>
+    </Card>
+  );
+}
 
 export default function Settings() {
   const queryClient = useQueryClient();
@@ -222,6 +319,8 @@ export default function Settings() {
           )}
         </div>
       </Card>
+
+      <Notifications />
 
       {browsing ? (
         <RemoteBrowser remote={browsing} onClose={() => setBrowsing(null)} />

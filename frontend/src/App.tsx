@@ -11,6 +11,7 @@ import Export from "./pages/Export";
 import Files from "./pages/Files";
 import Jobs from "./pages/Jobs";
 import Login from "./pages/Login";
+import Maintenance from "./pages/Maintenance";
 import Runs from "./pages/Runs";
 import Settings from "./pages/Settings";
 import { Spinner } from "./components/ui";
@@ -44,6 +45,7 @@ export default function App() {
             <Route path="files" element={<Files />} />
             <Route path="runs" element={<Runs />} />
             <Route path="export" element={<Export />} />
+            <Route path="maintenance" element={<Maintenance />} />
             <Route path="settings" element={<Settings />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>

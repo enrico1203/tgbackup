@@ -5,7 +5,19 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
-from .api import accounts, auth, dashboard, downloads, export, files, jobs, rclone, ws
+from .api import (
+    accounts,
+    auth,
+    dashboard,
+    downloads,
+    export,
+    files,
+    jobs,
+    maintenance,
+    preferences,
+    rclone,
+    ws,
+)
 from .db import SessionLocal, engine
 from .migrate import upgrade_database
 from .models import User
@@ -68,6 +80,8 @@ app.include_router(downloads.router)
 app.include_router(files.router)
 app.include_router(dashboard.router)
 app.include_router(export.router)
+app.include_router(maintenance.router)
+app.include_router(preferences.router)
 app.include_router(rclone.router)
 app.include_router(ws.router)
 

@@ -50,13 +50,17 @@ backend/
   app/
     config.py db.py models.py schemas.py security.py deps.py migrate.py main.py
     transfer.py (export and import of a channel index)
-    api/       auth accounts jobs downloads files dashboard export rclone ws
+    maintenance.py (check of a channel, rebuild of the index from it)
+    notify.py (report at the end of a run, to Saved Messages)
+    api/       auth accounts jobs downloads files dashboard export maintenance
+               preferences rclone ws
     telegram/  manager.py (client registry, peers) fast_transfer.py (parallel upload/download)
     rclone/    client.py (streaming lsjson, ranged cat, rcat, touch, config on disk)
-    sync/      source.py destination.py scanner.py runner.py download.py
+    sync/      source.py destination.py scanner.py filters.py runner.py download.py
                scheduler.py restore.py progress.py
 frontend/src/
-  pages/     Login ChangePassword Dashboard Jobs Downloads Accounts Files Runs Export Settings
+  pages/     Login ChangePassword Dashboard Jobs Downloads Accounts Files Runs Export
+             Maintenance Settings
   components/ Shell ui JobActivity DownloadActivity RemoteBrowser
   lib/       api auth progress types format theme
 .github/
@@ -154,6 +158,39 @@ remote is written straight to its final name, since rclone finalises an object o
 stream and a leftover name on a remote is far harder to clean up. The original mtime is restored,
 with `os.utime` locally and `rclone touch` on a remote, where it is best effort because plenty of
 backends refuse it.
+
+**Filters** (`sync/filters.py`): include and exclude patterns plus a size ceiling, per job.
+Translated to regular expressions once when the job starts and applied to the relative path of
+every file, for both kinds of source. A pattern with no slash matches the name at any depth, one
+with a slash matches the whole path, one ending with a slash matches everything under it, `*` stays
+inside a segment and `**` crosses them, and case is ignored. A filter is not only about what comes
+next: a file already in the channel that the filter now leaves out is missing from the listing, so
+the diff sees it as removed and deletes it from the channel. That is the intended behaviour and the
+form says so.
+
+**Channel check and index rebuild** (`maintenance.py`): the two directions of the same relationship.
+The check goes from the index to the channel, asks for every recorded message and reports the ones
+gone or carrying a document of the wrong size; with `repair` the damaged files go to `stale`, which
+is the state the runner already uses for parts that have to be replaced. The rebuild goes from the
+channel to the index, reads every message and puts the entries back together out of the captions,
+which is what makes a lost database an inconvenience rather than a disaster. Both run as background
+tasks with their progress in memory, because on a large channel they take minutes and there is
+nothing worth keeping across a restart: running them again repeats the same work. Neither may run
+while a sync job is uploading to that channel, since they change the index that job is writing; a
+check that only reports is always allowed.
+
+**The channel cannot give back the mtime**: a message carries name, folder and part number, never a
+date. Entries written by a rebuild get `MTIME_UNKNOWN` (-1) and the first scan of the job adopts the
+date of the source when the size matches, instead of taking every file for modified and re-uploading
+the whole channel. Same compromise a download job makes: size is what the channel actually knows.
+
+**Notifications** (`notify.py`): a report at the end of a run, sent to the Saved Messages of an
+account. The client is already connected and every account has a chat with itself, so there is no
+webhook to configure and no second service to keep alive. The preferences are two rows in `settings`
+rather than columns of their own, which is why they needed no migration. Off, errors only or every
+run, and a failure to send is a line in the log: a notification must never be able to break a job.
+Nothing is sent when the process is shutting down, or every deploy would produce a message per
+running job.
 
 **A download job deletes nothing**: a sync job deletes from the channel what disappeared from the
 source, because the channel is a copy this application owns. The destination of a download job holds
@@ -258,6 +295,21 @@ a remote is not guaranteed: comparing dates would re-download everything on ever
 
 **`--rev-id 0002` is the second revision, `download_jobs` and `download_runs`** (2026-07-27). Two new
 tables, no column added to the existing ones, so a database with rows goes through untouched.
+`0003` adds `include_globs`, `exclude_globs` and `max_file_size` to `sync_jobs`, three ADD COLUMN
+with the DDL default that `process_revision_directives` filled in by itself.
+
+**One filter engine, not rclone's** (since 2026-07-27). rclone has `--exclude` and it would have
+cost nothing to pass the patterns down, but then a pattern would mean one thing on a remote and
+another on a local folder, and that difference would only ever show up as files quietly missing
+from a backup. The patterns are matched in Python for both sources. The listing is not made cheaper
+by filtering earlier anyway: on a remote the cost is the API call, and everything is listed either
+way.
+
+**A rebuilt index arrives in a disabled job** (since 2026-07-27), for the same reason an imported
+one does: the job has no source yet, and a run against the wrong folder would see every file as
+removed and empty the channel message by message. The rebuild also skips paths already indexed
+anywhere on that channel, not only in the target job, so the same messages never get two entries and
+running it twice writes nothing the second time.
 
 **AGPL-3.0, chosen 2026-07-26**. This is a self-hosted network application, which is the case the
 Affero clause exists for: with plain GPL somebody could run a modified version as a hosted service

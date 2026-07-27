@@ -28,6 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from telethon.errors import FloodWaitError
 
+from .. import notify
 from ..db import SessionLocal
 from ..models import Channel, DownloadJob, DownloadRun, FileEntry, SyncJob, TelegramAccount, utcnow
 from ..telegram.fast_transfer import MAX_CONNECTIONS, download_document, stream_document
@@ -440,3 +441,52 @@ async def execute_download_job(job_id: int, cancel: StopSignal) -> None:
             # If shutdown stopped it, next_run_at stays as it was and the job resumes on
             # restart instead of skipping a whole interval.
             await session.commit()
+
+    if not interrupted_by_shutdown:
+        await _report(job_id, status, error)
+
+
+async def _report(job_id: int, status: str, error: str | None) -> None:
+    """Sends the run report, reading the counters back from the run that just ended."""
+    async with SessionLocal() as session:
+        job = await session.get(DownloadJob, job_id)
+        if job is None:
+            return
+        channel = await session.get(Channel, job.channel_id)
+        run = await session.scalar(
+            select(DownloadRun)
+            .where(DownloadRun.job_id == job_id)
+            .order_by(DownloadRun.id.desc())
+            .limit(1)
+        )
+        destination = job.remote if job.dest_type == "rclone" else job.local_path
+
+    outcome = {"idle": "completed", "error": "failed"}.get(status, status)
+    lines = [
+        f"Channel: {channel.title if channel else 'unknown'}",
+        f"Destination: {destination}",
+    ]
+    failed_files = 0
+    if run is not None:
+        failed_files = run.failed_files
+        lines.append(
+            f"In the channel {run.indexed_files}, already there {run.present_files}, "
+            f"downloaded {run.downloaded_files}"
+        )
+        lines.append(f"Data downloaded: {notify.format_bytes(run.downloaded_bytes)}")
+        lines.append(
+            f"Run started {run.started_at:%Y-%m-%d %H:%M} UTC, lasted "
+            f"{notify.format_duration(run.started_at, run.finished_at or utcnow())}"
+        )
+    if failed_files:
+        lines.append(f"Files failed: {failed_files}")
+    if error:
+        lines.append(f"Error: {error}")
+
+    await notify.send_report(
+        account_id=job.account_id,
+        title=f"download job {job.name}",
+        outcome=outcome,
+        lines=lines,
+        failed=status == "error" or bool(failed_files),
+    )

@@ -112,6 +112,9 @@ class JobIn(BaseModel):
     interval_hours: float = Field(gt=0, le=24 * 365)
     scan_files_per_sec: int = Field(default=0, ge=0)
     part_size_bytes: int | None = None
+    include_globs: str = ""
+    exclude_globs: str = ""
+    max_file_size: int = Field(default=0, ge=0)
     enabled: bool = True
 
 
@@ -124,6 +127,9 @@ class JobUpdate(BaseModel):
     interval_hours: float | None = Field(default=None, gt=0, le=24 * 365)
     scan_files_per_sec: int | None = Field(default=None, ge=0)
     part_size_bytes: int | None = None
+    include_globs: str | None = None
+    exclude_globs: str | None = None
+    max_file_size: int | None = Field(default=None, ge=0)
     enabled: bool | None = None
 
 
@@ -147,6 +153,9 @@ class JobOut(Model):
     interval_hours: float
     scan_files_per_sec: int
     part_size_bytes: int
+    include_globs: str
+    exclude_globs: str
+    max_file_size: int
     enabled: bool
     status: str
     phase: str | None
@@ -390,6 +399,52 @@ class ImportResultOut(BaseModel):
     files_skipped: int
     parts_imported: int
     warnings: list[str]
+
+
+# Notifications
+
+
+class NotifyPreferencesIn(BaseModel):
+    events: Literal["off", "errors", "all"]
+    # 0 means the report travels through the account of the job that ran.
+    account_id: int = Field(default=0, ge=0)
+
+
+class NotifyPreferencesOut(BaseModel):
+    events: str
+    account_id: int
+
+
+# Channel maintenance
+
+
+class CheckIn(BaseModel):
+    channel_id: int
+    # Marks the damaged files for re-upload. Without it the check only reports.
+    repair: bool = True
+
+
+class RebuildIn(BaseModel):
+    channel_id: int
+    # create: a new disabled job. merge: adds to an existing job on this channel.
+    mode: Literal["create", "merge"] = "create"
+    job_id: int | None = None
+    job_name: str = ""
+
+
+class MaintenanceTaskOut(BaseModel):
+    id: str
+    kind: str
+    channel_id: int
+    channel_title: str
+    phase: str
+    step: str
+    processed: int
+    total: int
+    started_at: datetime
+    finished_at: datetime | None
+    result: dict
+    error: str | None
 
 
 # Dashboard

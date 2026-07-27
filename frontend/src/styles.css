@@ -479,6 +479,15 @@ a {
   color: var(--muted);
 }
 
+textarea.glob-box {
+  min-height: 96px;
+  resize: vertical;
+  line-height: 1.5;
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
+}
+
 textarea.config-box {
   min-height: 260px;
   resize: vertical;

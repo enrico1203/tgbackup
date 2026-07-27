@@ -19,6 +19,13 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+# An entry rebuilt by reading the channel has no date: the caption of a message carries the
+# name, the folder and the part number, never the modification time. This value marks that
+# absence, and the first scan of the job adopts the date of the source instead of taking
+# the file for modified and uploading it again. See sync/runner.py, _diff.
+MTIME_UNKNOWN = -1
+
+
 class Base(DeclarativeBase):
     pass
 
@@ -103,6 +110,13 @@ class SyncJob(Base):
     # 0 means no limit. Above zero it is the ceiling of files examined per second.
     scan_files_per_sec: Mapped[int] = mapped_column(Integer, default=0)
     part_size_bytes: Mapped[int] = mapped_column(BigInteger, default=1_900_000_000)
+
+    # One pattern per line. Empty include means everything, exclude wins over include.
+    # See sync/filters.py: the same matcher is used for both kinds of source.
+    include_globs: Mapped[str] = mapped_column(Text, default="")
+    exclude_globs: Mapped[str] = mapped_column(Text, default="")
+    # 0 means no ceiling. Above zero, files larger than this are left out of the backup.
+    max_file_size: Mapped[int] = mapped_column(BigInteger, default=0)
 
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # idle, running, error

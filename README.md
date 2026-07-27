@@ -20,6 +20,11 @@ a download job pours a whole channel back into a folder or an rclone remote.
 - **Restore**: downloads all the parts and rebuilds the original file.
 - **Download jobs**: a whole channel back into a folder or an rclone remote, on a schedule, skipping
   what is already there and deleting nothing.
+- **Filters**: include and exclude patterns and a size ceiling per job, so temporary files, sample
+  folders and anything too large stay out.
+- **Check and rebuild**: the index can be verified against the channel, and rebuilt from it when the
+  database is gone.
+- **Notifications**: a report at the end of a run, in the Saved Messages of a Telegram account.
 - **Export and import**: the index of a channel travels to another machine in one file, so that
   machine can restore everything the channel holds.
 
@@ -93,6 +98,70 @@ the exact byte ranges each Telegram part needs, straight from the stream to the 
 The timeouts on the rclone commands are safety nets against a remote that never answers, not limits
 on how much work is allowed: a full listing may take up to six hours, browsing and checks ten minutes.
 
+## Filters
+
+Every sync job can be told what to leave out, in the job form. One pattern per line:
+
+```
+*.tmp              the name, at any depth
+.DS_Store          same
+sample/            everything under a folder with that name
+**/Trash/**        crosses folders
+Films/*/sample.mkv the whole relative path
+```
+
+`*` stays inside one path segment, `**` crosses them, `?` is one character, and case is ignored, so
+`*.mkv` also catches `FILM.MKV`. Include works the same way: leave it empty for everything, fill it
+in and only what matches is backed up. Exclude always wins. There is also a ceiling on the size of a
+single file.
+
+The same matcher runs whichever the source is. rclone has filters of its own, but a pattern that
+meant one thing on a remote and another on a local folder would show up only as files quietly
+missing from a backup.
+
+One thing to know: a filter is not only about what comes next. A file already in the channel that
+the filter now leaves out is missing from the listing, so the next run sees it as removed and
+deletes it from the channel, exactly as if it had disappeared from the source. That is how you clean
+up a channel that has years of `.DS_Store` in it, and it is also how you lose something if a pattern
+has one character too many.
+
+## Notifications
+
+A report at the end of a run, in the Saved Messages of a Telegram account. Nothing to install: the
+account is already connected, and every account has a chat with itself. In Settings, choose whether
+to send nothing, only failures, or every run, and which account carries them.
+
+A failure is a run that ended in error or that left files behind. The message says which job, what
+it was working on, what it examined and uploaded, how long it took and what went wrong.
+
+## Checking and rebuilding a channel
+
+The files live on Telegram, but the knowledge of what they are lives in this database. The
+Maintenance page keeps that relationship honest, in both directions. Pick an account and a channel,
+any channel of that account, even one with no job.
+
+**Check** goes from the index to the channel. It asks Telegram for every message the index records
+and reports the ones that are gone or that carry a file of the wrong size, which is how you find out
+that something was deleted by hand before the day you need it back. It can mark the damaged files in
+the same pass, and the sync job uploads them again on its next run.
+
+**Rebuild** goes the other way. It reads every message of the channel and puts the index back
+together out of the captions, which carry the file name, the folder and the part number. This is
+what a lost database needs: the files are still up there, and without the index nobody knows what
+they are. The entries go into a new job, which arrives disabled and with no source, or into an
+existing job on that channel. Paths the index already knows are left alone, so it can be run again
+safely.
+
+An export is still the better way to move a channel, because it carries the dates as well and takes
+one second. A rebuild only exists for when there is no export.
+
+What the channel cannot give back is the modification time: it is nowhere in a message. Rebuilt
+files are marked as having an unknown date, and the first scan of the job takes the date of the
+source instead of treating everything as modified and uploading the whole channel a second time.
+
+Neither operation can run while a sync job is uploading to that channel, since they change the
+index that job is writing. A check that only reports is always allowed.
+
 ## Setup
 
 ```bash
@@ -152,13 +221,14 @@ is the last thing in `docker compose logs backend`.
 3. **Settings**: to use an rclone remote, paste your `rclone.conf` here. It is stored encrypted, and
    the remotes it declares can be browsed from the same page.
 4. **Sync jobs**: pick the source (local folder or rclone remote), the account, the channel, how
-   often to run and the scan rate. The job starts on its own, or with Run now.
+   often to run, the scan rate and what to leave out. The job starts on its own, or with Run now.
 5. **Download jobs**: pick the channel to bring back, the destination (writable folder or rclone
    remote) and how often to run. Nothing is ever deleted at the destination.
 6. **Files and restore**: everything tracked, grouped by channel, with parts and message ids linking
    straight to Telegram. Restore rebuilds a single file into `data/restore/`, while a download job
    brings back a whole channel.
 7. **Export**: moves a channel to another installation.
+8. **Maintenance**: checks a channel against the index, or rebuilds the index by reading it.
 
 ## Moving a channel to another machine
 

@@ -17,8 +17,18 @@ from sqlalchemy import delete, func, select
 from telethon.errors import FloodWaitError
 from telethon.tl.types import DocumentAttributeFilename
 
+from .. import notify
 from ..db import SessionLocal
-from ..models import Channel, FileEntry, FilePart, JobRun, SyncJob, TelegramAccount, utcnow
+from ..models import (
+    MTIME_UNKNOWN,
+    Channel,
+    FileEntry,
+    FilePart,
+    JobRun,
+    SyncJob,
+    TelegramAccount,
+    utcnow,
+)
 from ..telegram.fast_transfer import MAX_CONNECTIONS, upload_slice
 from ..telegram.manager import manager
 from .progress import hub
@@ -233,6 +243,14 @@ class JobRunner:
                         )
                     )
                     added += 1
+                elif entry.mtime_ns == MTIME_UNKNOWN and entry.size == item.size:
+                    # Rebuilt by reading the channel: the messages carry the name, the
+                    # folder and the part number, never the date. The file is up there and
+                    # is the right size, so the date of the source is adopted instead of
+                    # deleting the whole thing and uploading it again for a field that was
+                    # never recorded.
+                    entry.mtime_ns = item.mtime_ns
+                    entry.name = item.name
                 elif entry.size != item.size or entry.mtime_ns != item.mtime_ns:
                     # Content changed: the old parts on Telegram are no longer valid.
                     entry.size = item.size
@@ -532,3 +550,57 @@ async def execute_job(job_id: int, cancel: StopSignal) -> None:
             # If shutdown stopped it, next_run_at stays as it was: on restart the job
             # resumes right away instead of skipping a whole interval.
             await session.commit()
+
+    if not interrupted_by_shutdown:
+        # No report when the process is going down: the job has not finished, it is being
+        # put back where it was, and a message saying it stopped would be noise on every
+        # deploy.
+        await _report(job_id, status, error)
+
+
+async def _report(job_id: int, status: str, error: str | None) -> None:
+    """Sends the run report, reading the counters back from the run that just ended."""
+    async with SessionLocal() as session:
+        job = await session.get(SyncJob, job_id)
+        if job is None:
+            return
+        channel = await session.get(Channel, job.channel_id)
+        run = await session.scalar(
+            select(JobRun).where(JobRun.job_id == job_id).order_by(JobRun.id.desc()).limit(1)
+        )
+        failed_files = await session.scalar(
+            select(func.count(FileEntry.id)).where(
+                FileEntry.job_id == job_id, FileEntry.state == "error"
+            )
+        )
+        source = job.remote if job.source_type == "rclone" else job.local_path
+
+    outcome = {"idle": "completed", "error": "failed"}.get(status, status)
+    lines = [
+        f"Source: {source}",
+        f"Channel: {channel.title if channel else 'unknown'}",
+    ]
+    if run is not None:
+        lines.append(
+            f"Examined {run.scanned}, new {run.added}, modified {run.modified}, "
+            f"removed {run.removed}"
+        )
+        lines.append(
+            f"Uploaded {run.uploaded_files} files, {notify.format_bytes(run.uploaded_bytes)}"
+        )
+        lines.append(
+            f"Run started {run.started_at:%Y-%m-%d %H:%M} UTC, lasted "
+            f"{notify.format_duration(run.started_at, run.finished_at or utcnow())}"
+        )
+    if failed_files:
+        lines.append(f"Files in error: {failed_files}")
+    if error:
+        lines.append(f"Error: {error}")
+
+    await notify.send_report(
+        account_id=job.account_id,
+        title=f"sync job {job.name}",
+        outcome=outcome,
+        lines=lines,
+        failed=status == "error" or bool(failed_files),
+    )

@@ -67,6 +67,9 @@ export interface Job {
   interval_hours: number;
   scan_files_per_sec: number;
   part_size_bytes: number;
+  include_globs: string;
+  exclude_globs: string;
+  max_file_size: number;
   enabled: boolean;
   status: string;
   phase: string | null;
@@ -249,6 +252,26 @@ export interface ImportResult {
   files_skipped: number;
   parts_imported: number;
   warnings: string[];
+}
+
+export interface NotifyPreferences {
+  events: "off" | "errors" | "all";
+  account_id: number;
+}
+
+export interface MaintenanceTask {
+  id: string;
+  kind: "check" | "rebuild";
+  channel_id: number;
+  channel_title: string;
+  phase: "running" | "done" | "error";
+  step: string;
+  processed: number;
+  total: number;
+  started_at: string;
+  finished_at: string | null;
+  result: Record<string, number | string | string[]>;
+  error: string | null;
 }
 
 export interface Dashboard {

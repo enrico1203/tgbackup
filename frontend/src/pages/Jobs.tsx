@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router";
 import {
   CloudUpload,
+  Filter,
   FolderOpen,
   FolderSearch,
   HardDrive,
@@ -54,6 +55,11 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
   const [partSize, setPartSize] = useState(
     job ? String(job.part_size_bytes / GIGA) : "",
   );
+  const [includeGlobs, setIncludeGlobs] = useState(job?.include_globs ?? "");
+  const [excludeGlobs, setExcludeGlobs] = useState(job?.exclude_globs ?? "");
+  const [maxFileSize, setMaxFileSize] = useState(
+    job?.max_file_size ? String(job.max_file_size / GIGA) : "",
+  );
   const [enabled, setEnabled] = useState(job?.enabled ?? true);
 
   const { data: channels } = useQuery({
@@ -87,6 +93,9 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
         interval_hours: Number(intervalHours),
         scan_files_per_sec: Number(scanRate),
         part_size_bytes: Math.round(Number(partSize) * GIGA),
+        include_globs: includeGlobs.trim(),
+        exclude_globs: excludeGlobs.trim(),
+        max_file_size: maxFileSize ? Math.round(Number(maxFileSize) * GIGA) : 0,
         enabled,
       };
       if (job) {
@@ -290,6 +299,54 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
         />
       </Field>
 
+      <div className="grid-2">
+        <Field
+          label="Exclude these files"
+          hint="One pattern per line. *.tmp catches the name at any depth, cache/ the whole folder, ** crosses folders. Case does not matter."
+        >
+          <textarea
+            className="mono glob-box"
+            value={excludeGlobs}
+            spellCheck={false}
+            placeholder={"*.tmp\n.DS_Store\nsample/\n**/Trash/**"}
+            onChange={(e) => setExcludeGlobs(e.target.value)}
+          />
+        </Field>
+
+        <Field
+          label="Include only these"
+          hint="Empty means everything. When it is not empty, only what matches is backed up. Exclude still wins."
+        >
+          <textarea
+            className="mono glob-box"
+            value={includeGlobs}
+            spellCheck={false}
+            placeholder={"*.mkv\n*.mp4"}
+            onChange={(e) => setIncludeGlobs(e.target.value)}
+          />
+        </Field>
+      </div>
+
+      <Field
+        label="Skip files larger than (GB)"
+        hint="Empty or zero means no ceiling."
+      >
+        <input
+          value={maxFileSize}
+          onChange={(e) => setMaxFileSize(e.target.value.replace(/[^\d.]/g, ""))}
+          inputMode="decimal"
+          placeholder="0"
+        />
+      </Field>
+
+      {job && (includeGlobs.trim() || excludeGlobs.trim() || Number(maxFileSize) > 0) ? (
+        <Alert tone="info">
+          A filter applies to the whole backup, not only to what comes next: files already
+          on Telegram that the filter now leaves out are deleted from the channel on the
+          next run, exactly as if they had disappeared from the source.
+        </Alert>
+      ) : null}
+
       <label className="switch">
         <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
         <span>Run automatically on the interval</span>
@@ -389,6 +446,18 @@ function JobCard({ job, onEdit }: { job: Job; onEdit: (job: Job) => void }) {
           <span>account {job.account_label}</span>
           <span>every {formatInterval(job.interval_hours)}</span>
           <span>parts of {formatBytes(job.part_size_bytes)}</span>
+          {job.exclude_globs || job.include_globs || job.max_file_size ? (
+            <span className="row" style={{ gap: 6 }}>
+              <Filter size={12} />
+              {[
+                job.include_globs ? `${job.include_globs.split("\n").length} include` : "",
+                job.exclude_globs ? `${job.exclude_globs.split("\n").length} exclude` : "",
+                job.max_file_size ? `under ${formatBytes(job.max_file_size)}` : "",
+              ]
+                .filter(Boolean)
+                .join(", ")}
+            </span>
+          ) : null}
         </div>
 
         {running && progress ? (

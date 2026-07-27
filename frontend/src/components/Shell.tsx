@@ -14,6 +14,7 @@ import {
   SlidersHorizontal,
   Sun,
   Users,
+  Wrench,
   X,
 } from "lucide-react";
 
@@ -30,6 +31,7 @@ const NAV = [
   { to: "/files", label: "Files and restore", icon: Archive, end: false },
   { to: "/runs", label: "History", icon: History, end: false },
   { to: "/export", label: "Export", icon: PackageOpen, end: false },
+  { to: "/maintenance", label: "Maintenance", icon: Wrench, end: false },
   { to: "/settings", label: "Settings", icon: SlidersHorizontal, end: false },
 ];
 
@@ -41,6 +43,7 @@ const TITLES: Record<string, string> = {
   "/files": "Files and restore",
   "/runs": "Run history",
   "/export": "Export and import",
+  "/maintenance": "Channel maintenance",
   "/settings": "Settings",
 };
 
