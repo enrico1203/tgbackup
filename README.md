@@ -2,7 +2,8 @@
 
 Keeps one or more local folders, or rclone remotes, mirrored inside private Telegram channels.
 Uploads new files, deletes from the channel the ones that disappeared from the source, re-uploads
-the modified ones, and can reassemble files that were split into parts.
+the modified ones, and can reassemble files that were split into parts. It also goes the other way:
+a download job pours a whole channel back into a folder or an rclone remote.
 
 ## What it does
 
@@ -17,6 +18,8 @@ the modified ones, and can reassemble files that were split into parts.
   twice concurrently, even when a run takes days.
 - **Live progress**: upload speed, remaining files and estimated time over a WebSocket.
 - **Restore**: downloads all the parts and rebuilds the original file.
+- **Download jobs**: a whole channel back into a folder or an rclone remote, on a schedule, skipping
+  what is already there and deleting nothing.
 - **Export and import**: the index of a channel travels to another machine in one file, so that
   machine can restore everything the channel holds.
 
@@ -33,6 +36,31 @@ listed everything in 11.6 seconds against roughly 5 minutes walking a FUSE mount
 
 Both look the same to a sync job: split, deletion of what disappeared, re-upload of what changed and
 restore work identically whichever the source is.
+
+## Download jobs
+
+A download job is a sync job the other way round. It takes what a channel holds and writes it to a
+local folder or an rclone remote, on the same kind of schedule, and it is what turns an imported
+index into files again: export the channel on the old machine, import it here, point a download job
+at a folder and everything comes back, split files reassembled and dates restored.
+
+What it can write is what the index knows: the files uploaded by a sync job of this installation, or
+those of an index imported from another one. Every run lists the destination, compares by size and
+downloads only what is missing, so a run with nothing to do costs one scan. Interrupt it and the
+next run picks up where it stopped: a local file only takes its final name once complete, and a file
+left short on a remote does not match the expected size.
+
+**It never deletes anything at the destination.** A sync job deletes from the channel what has gone
+from the source, because the channel is a copy this application owns. Your folder is not, and a file
+the channel does not know about is not a mistake to correct.
+
+**The destination has to be writable.** The folders to back up are mounted `:ro` on purpose, so a
+download destination needs its own volume in `docker-compose.yml` without the `:ro` suffix, and it
+should never be a folder a sync job reads. The form refuses a path that does not exist or cannot be
+written, when the job is saved rather than in the middle of the night.
+
+On a remote nothing is staged on disk either: the parts arrive from Telegram already in order and go
+straight into `rclone rcat`.
 
 ## Rclone remotes
 
@@ -84,6 +112,13 @@ Then add the folders to back up in `docker-compose.yml`, service `backend`, as r
       - /mnt/documents:/mnt/documents:ro
 ```
 
+The destination of a download job is the one volume that goes in without `:ro`, and it must not be
+one of the folders above:
+
+```yaml
+      - /mnt/restored:/mnt/restored
+```
+
 Finally:
 
 ```bash
@@ -118,9 +153,12 @@ is the last thing in `docker compose logs backend`.
    the remotes it declares can be browsed from the same page.
 4. **Sync jobs**: pick the source (local folder or rclone remote), the account, the channel, how
    often to run and the scan rate. The job starts on its own, or with Run now.
-5. **Files and restore**: everything tracked, grouped by channel, with parts and message ids linking
-   straight to Telegram. Restore rebuilds a file into `data/restore/`.
-6. **Export**: moves a channel to another installation.
+5. **Download jobs**: pick the channel to bring back, the destination (writable folder or rclone
+   remote) and how often to run. Nothing is ever deleted at the destination.
+6. **Files and restore**: everything tracked, grouped by channel, with parts and message ids linking
+   straight to Telegram. Restore rebuilds a single file into `data/restore/`, while a download job
+   brings back a whole channel.
+7. **Export**: moves a channel to another installation.
 
 ## Moving a channel to another machine
 
@@ -141,7 +179,8 @@ Two things to know.
 **The imported jobs arrive disabled, on purpose.** Their source is a path on the machine they came
 from. Point each one at the right folder or remote before enabling it: a job whose source exists but
 holds something else sees every file as removed and empties the channel on its first run. If all you
-want is to restore, leave them disabled and use Files and restore, which needs no run at all.
+want is the files back, leave them disabled and create a download job on that channel, which reads
+the index and writes nothing to Telegram. A single file is quicker through Files and restore.
 
 **The Telegram account matters.** The permission to read a channel is issued per account, so the
 import wants an account that is a member of it, ideally the same one. If it is connected the channel

@@ -3,6 +3,7 @@
 Self-hosted application that keeps local folders or rclone remotes mirrored inside private
 Telegram channels. Uploads new files, deletes from the channel the ones that disappeared,
 re-uploads the modified ones, splits files above the threshold and can reassemble them.
+Download jobs go the other way, pouring a whole channel back into a folder or a remote.
 
 ## Operating rules (binding)
 
@@ -19,7 +20,9 @@ need Telegram and a remote.
 **No emoji.** Nowhere: interface, code, comments, logs, commits, documentation. Icons come from
 `lucide-react` (SVG).
 
-**Never write to the user's data.** Folders to back up are mounted `:ro`.
+**Never write to the user's data.** Folders to back up are mounted `:ro`. The one exception is the
+destination of a download job, which exists to be written: it needs its own volume without `:ro`,
+it must never be a folder a sync job reads, and even there nothing is ever deleted.
 
 **No destructive tests against production.** There is no separate environment, so before writing or
 deleting anything through the APIs (rclone configuration, accounts, jobs) check whether a real value
@@ -47,13 +50,14 @@ backend/
   app/
     config.py db.py models.py schemas.py security.py deps.py migrate.py main.py
     transfer.py (export and import of a channel index)
-    api/       auth accounts jobs files dashboard export rclone ws
+    api/       auth accounts jobs downloads files dashboard export rclone ws
     telegram/  manager.py (client registry, peers) fast_transfer.py (parallel upload/download)
-    rclone/    client.py (streaming lsjson, ranged cat, preview, config on disk)
-    sync/      source.py scanner.py runner.py scheduler.py restore.py progress.py
+    rclone/    client.py (streaming lsjson, ranged cat, rcat, touch, config on disk)
+    sync/      source.py destination.py scanner.py runner.py download.py
+               scheduler.py restore.py progress.py
 frontend/src/
-  pages/     Login ChangePassword Dashboard Jobs Accounts Files Runs Export Settings
-  components/ Shell ui JobActivity RemoteBrowser
+  pages/     Login ChangePassword Dashboard Jobs Downloads Accounts Files Runs Export Settings
+  components/ Shell ui JobActivity DownloadActivity RemoteBrowser
   lib/       api auth progress types format theme
 .github/
   workflows/ ci.yml trivy.yml
@@ -77,10 +81,20 @@ go as documents (`force_document=True`), never recompressed.
 
 **Connection budget**: the 20 connections are per data center, not per job. `max_concurrent_jobs` on
 the account divides the budget: with 2 concurrent jobs each gets 10. Raising it does not increase
-total bandwidth, it spreads the same bandwidth across more jobs.
+total bandwidth, it spreads the same bandwidth across more jobs. `manager.transfer_lock` is shared
+between uploads and downloads: the ceiling does not care which direction the bytes go.
 
 **Sources**: `sync/source.py` hides local folders and rclone remotes behind the same interface
 (`list_files`, `reader`). The uploader does not know where the bytes come from.
+
+**Destinations**: `sync/destination.py` is the mirror image, `list_files` plus `sink`. The one
+difference it cannot hide is `random_access`: a local file is written with pwrite at the offset of
+every part, so the parts download in parallel, while `rclone rcat` is a pipe and takes the bytes in
+order. `stream_document` in `fast_transfer.py` bridges the two, downloading in parallel and yielding
+in order, with early chunks held in a window of 32 parts, that is 32 MB whatever the file size. It
+cannot deadlock: a sender only waits when it is a whole window ahead, and the part being waited for
+always belongs to a sender that is not ahead at all, because one sender delivers its own parts in
+order.
 
 **rclone without mount**: `lsjson -R` to list, `cat --offset --count` for slices. Measured on a
 remote with 12 TB and 16,709 files: listing 11.6 s against roughly 5 minutes walking the FUSE mount,
@@ -123,8 +137,29 @@ keep the entity cache, so resolution would fail after a restart.
 **Scheduler**: asyncio supervisor with a 10 s tick. The `running` state lives in the database, so the
 same job never overlaps itself even if it runs for days. `next_run_at` is computed from the end of
 the run. If a job is stopped by process shutdown, `next_run_at` stays unchanged and the job resumes
-on restart instead of slipping a whole interval. The account semaphore covers only the upload phase:
-scanning and cleanup run in parallel, and queued jobs show a `waiting` phase.
+on restart instead of slipping a whole interval. The account semaphore covers only the transfer
+phase: scanning and cleanup run in parallel, and queued jobs show a `waiting` phase. Everything is
+keyed by `(kind, id)`, `sync` or `download`: the two tables are numbered independently and job 3 and
+download job 3 have to be able to run at the same time.
+
+**Download jobs** (`sync/download.py`): the inverse of a sync job. What the channel holds is the
+index in the database, that is the `file_entries` of the sync jobs writing to that channel, so a
+channel whose index arrived through Import works exactly the same, and that is the point of the pair.
+No file table of its own: every run lists the destination and downloads the difference, so the
+destination is the state and nothing can drift away from it. The comparison is by size alone, not by
+the identity triple: the date of a file at the destination says when it was written there, and some
+backends do not store one at all. A local file is written to `<name>.tgpart` and renamed on
+completion, because it is sized upfront and a half written one would otherwise look complete; a
+remote is written straight to its final name, since rclone finalises an object only at the end of the
+stream and a leftover name on a remote is far harder to clean up. The original mtime is restored,
+with `os.utime` locally and `rclone touch` on a remote, where it is best effort because plenty of
+backends refuse it.
+
+**A download job deletes nothing**: a sync job deletes from the channel what disappeared from the
+source, because the channel is a copy this application owns. The destination of a download job holds
+the user's own files, and a file the channel does not know about is not a mistake to correct. Two
+jobs with the same rel_path in one channel are resolved by keeping the most recently uploaded, which
+is the same rule the file browser applies.
 
 **Durability**: every part is recorded in the database as soon as its message is sent. A crash in the
 middle of a large file leaves no orphan messages: on the next scan the file goes through `stale`, the
@@ -214,6 +249,16 @@ with an "(imported)" suffix either, however tempting: `merge` matches jobs by na
 would make a second import of the same file miss the job the first one created and duplicate
 everything.
 
+**A download job compares by size and never deletes** (since 2026-07-27). Mirroring in reverse, that
+is deleting from the destination what the channel does not hold, would mean this application deleting
+the user's own files on the strength of an index that may have been imported from another machine.
+The comparison could have used the identity triple instead of size alone, but the mtime at the
+destination is the moment the file was written there, unless the restore of the date worked, which on
+a remote is not guaranteed: comparing dates would re-download everything on every run.
+
+**`--rev-id 0002` is the second revision, `download_jobs` and `download_runs`** (2026-07-27). Two new
+tables, no column added to the existing ones, so a database with rows goes through untouched.
+
 **AGPL-3.0, chosen 2026-07-26**. This is a self-hosted network application, which is the case the
 Affero clause exists for: with plain GPL somebody could run a modified version as a hosted service
 and owe nothing, since they would never be distributing it. The comparable projects settled the same
@@ -273,3 +318,13 @@ job path is the one inside the container.
 path can be copied or applied directly. No container restart and no volume: the configuration is
 reloaded on save and the remote is contacted when the job is saved, so an unreachable path fails
 immediately.
+
+## Adding a download destination
+
+**Local folder**: a volume in `docker-compose.yml` **without** `:ro`, as `- /host/path:/host/path`,
+then `docker compose up -d --no-deps backend`. Never a folder a sync job reads. The form refuses a
+path that does not exist or is not writable, `os.access(W_OK)` returns false on a `:ro` bind mount
+even for root, so the mistake is caught when the job is saved and not at three in the morning.
+
+**rclone remote**: nothing to mount, same form as a source. The bytes go from Telegram into
+`rclone rcat` through a pipe, nothing is staged on disk.

@@ -13,6 +13,9 @@ services:
       # Add more below in the same form, then: docker compose up -d --no-deps backend
       - /mnt/documenti:/mnt/documenti:ro
       - /mnt/jotta2:/mnt/jotta2:ro
+      # Destination of a download job, the only volume that is written. Without :ro, and
+      # never the same folder as one of the sources above.
+      # - /mnt/ripristino:/mnt/ripristino
     networks:
       - tgbackup
 

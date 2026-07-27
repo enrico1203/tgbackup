@@ -96,6 +96,54 @@ export interface JobRun {
   error: string | null;
 }
 
+export interface DownloadStats {
+  files_indexed: number;
+  bytes_indexed: number;
+  files_at_destination: number;
+  bytes_at_destination: number;
+  files_failed: number;
+  last_run_at: string | null;
+}
+
+export interface DownloadJob {
+  id: number;
+  name: string;
+  account_id: number;
+  channel_id: number;
+  dest_type: "local" | "rclone";
+  local_path: string;
+  remote: string | null;
+  interval_hours: number;
+  enabled: boolean;
+  status: string;
+  phase: string | null;
+  last_error: string | null;
+  last_run_at: string | null;
+  last_finished_at: string | null;
+  next_run_at: string | null;
+  created_at: string;
+  account_label: string;
+  channel_title: string;
+  channel_tg_id: number;
+  stats: DownloadStats;
+}
+
+export interface DownloadRun {
+  id: number;
+  job_id: number;
+  started_at: string;
+  finished_at: string | null;
+  status: string;
+  indexed_files: number;
+  indexed_bytes: number;
+  present_files: number;
+  present_bytes: number;
+  downloaded_files: number;
+  downloaded_bytes: number;
+  failed_files: number;
+  error: string | null;
+}
+
 export interface FilePart {
   part_index: number;
   offset: number;
@@ -208,6 +256,8 @@ export interface Dashboard {
   accounts_connected: number;
   jobs: number;
   jobs_running: number;
+  downloads: number;
+  downloads_running: number;
   files_total: number;
   files_uploaded: number;
   files_pending: number;
@@ -239,6 +289,29 @@ export interface JobProgress {
   elapsed_seconds: number;
 }
 
+export interface DownloadProgress {
+  job_id: number;
+  name: string;
+  phase: string;
+  current_file: string | null;
+  current_part: number;
+  current_parts: number;
+  indexed_files: number;
+  indexed_bytes: number;
+  dest_files: number;
+  dest_where: string | null;
+  present_files: number;
+  files_total: number;
+  files_done: number;
+  files_remaining: number;
+  bytes_total: number;
+  bytes_done: number;
+  bytes_remaining: number;
+  speed_bps: number;
+  eta_seconds: number | null;
+  elapsed_seconds: number;
+}
+
 export interface RestoreProgress {
   restore_id: string;
   file_name: string;
@@ -254,5 +327,6 @@ export interface RestoreProgress {
 export interface ProgressFrame {
   type: "progress";
   jobs: JobProgress[];
+  downloads: DownloadProgress[];
   restores: RestoreProgress[];
 }

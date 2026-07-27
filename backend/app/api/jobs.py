@@ -8,7 +8,7 @@ from ..deps import ActiveUserDep, SessionDep
 from ..models import Channel, FileEntry, JobRun, SyncJob, TelegramAccount
 from ..rclone import client as rclone
 from ..schemas import JobIn, JobOut, JobRunOut, JobStats, JobUpdate
-from ..sync.scheduler import scheduler
+from ..sync.scheduler import SYNC, scheduler
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -181,7 +181,7 @@ async def delete_job(job_id: int, session: SessionDep, _: ActiveUserDep) -> None
     job = await session.get(SyncJob, job_id)
     if job is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
-    if scheduler.is_running(job_id):
+    if scheduler.is_running(SYNC, job_id):
         raise HTTPException(
             status.HTTP_409_CONFLICT, "The job is running, stop it before deleting it"
         )
@@ -194,7 +194,7 @@ async def run_job(job_id: int, session: SessionDep, _: ActiveUserDep) -> JobOut:
     job = await session.get(SyncJob, job_id)
     if job is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
-    if not await scheduler.trigger(job_id):
+    if not await scheduler.trigger(SYNC, job_id):
         raise HTTPException(status.HTTP_409_CONFLICT, "The job is already running")
     await session.refresh(job)
     return await _to_out(session, job)
@@ -205,7 +205,7 @@ async def stop_job(job_id: int, session: SessionDep, _: ActiveUserDep) -> JobOut
     job = await session.get(SyncJob, job_id)
     if job is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
-    if not await scheduler.stop(job_id):
+    if not await scheduler.stop(SYNC, job_id):
         raise HTTPException(status.HTTP_409_CONFLICT, "The job is not running")
     return await _to_out(session, job)
 

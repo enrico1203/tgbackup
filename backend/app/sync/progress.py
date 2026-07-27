@@ -21,8 +21,38 @@ log = logging.getLogger(__name__)
 SPEED_SMOOTHING = 3.0
 
 
+class SpeedMeter:
+    """Exponential moving average of the transfer speed.
+
+    Not a dataclass on purpose: a dataclass base whose fields all have defaults would stop
+    the classes below from declaring fields without one. It only brings the methods, and
+    the three fields they work on are declared by whoever inherits it, which every class
+    here does.
+    """
+
+    bytes_done: int
+    speed_bps: float
+    _window_bytes: int
+    _window_start: float
+
+    def add_bytes(self, count: int) -> None:
+        self.bytes_done += count
+        self._window_bytes += count
+
+    def tick(self) -> None:
+        now = time.monotonic()
+        elapsed = now - self._window_start
+        if elapsed <= 0:
+            return
+        instant = self._window_bytes / elapsed
+        weight = min(1.0, elapsed / SPEED_SMOOTHING)
+        self.speed_bps = self.speed_bps + (instant - self.speed_bps) * weight
+        self._window_bytes = 0
+        self._window_start = now
+
+
 @dataclass
-class JobProgress:
+class JobProgress(SpeedMeter):
     job_id: int
     name: str
     phase: str = "idle"
@@ -47,21 +77,6 @@ class JobProgress:
 
     _window_bytes: int = 0
     _window_start: float = field(default_factory=time.monotonic)
-
-    def add_bytes(self, count: int) -> None:
-        self.bytes_done += count
-        self._window_bytes += count
-
-    def tick(self) -> None:
-        now = time.monotonic()
-        elapsed = now - self._window_start
-        if elapsed <= 0:
-            return
-        instant = self._window_bytes / elapsed
-        weight = min(1.0, elapsed / SPEED_SMOOTHING)
-        self.speed_bps = self.speed_bps + (instant - self.speed_bps) * weight
-        self._window_bytes = 0
-        self._window_start = now
 
     @property
     def bytes_remaining(self) -> int:
@@ -102,7 +117,83 @@ class JobProgress:
 
 
 @dataclass
-class RestoreProgress:
+class DownloadProgress(SpeedMeter):
+    """Progress of a download job.
+
+    It does not reuse `JobProgress` because the counters mean different things: there the
+    scan looks at the source and everything found has to go up, here the channel index is
+    known upfront and the scan looks at the destination to find out how little of it is
+    actually missing.
+    """
+
+    job_id: int
+    name: str
+    phase: str = "idle"
+    current_file: str | None = None
+    current_part: int = 0
+    current_parts: int = 0
+
+    # What the channel holds, according to the index.
+    indexed_files: int = 0
+    indexed_bytes: int = 0
+    # What the destination already holds. `dest_where` follows the scan folder by folder.
+    dest_files: int = 0
+    dest_where: str | None = None
+    present_files: int = 0
+
+    # The missing files, the ones this run downloads.
+    files_total: int = 0
+    files_done: int = 0
+    bytes_total: int = 0
+    bytes_done: int = 0
+
+    started_at: float = field(default_factory=time.monotonic)
+    speed_bps: float = 0.0
+
+    _window_bytes: int = 0
+    _window_start: float = field(default_factory=time.monotonic)
+
+    @property
+    def bytes_remaining(self) -> int:
+        return max(0, self.bytes_total - self.bytes_done)
+
+    @property
+    def files_remaining(self) -> int:
+        return max(0, self.files_total - self.files_done)
+
+    @property
+    def eta_seconds(self) -> float | None:
+        if self.speed_bps < 1024 or self.bytes_remaining == 0:
+            return None
+        return self.bytes_remaining / self.speed_bps
+
+    def snapshot(self) -> dict:
+        return {
+            "job_id": self.job_id,
+            "name": self.name,
+            "phase": self.phase,
+            "current_file": self.current_file,
+            "current_part": self.current_part,
+            "current_parts": self.current_parts,
+            "indexed_files": self.indexed_files,
+            "indexed_bytes": self.indexed_bytes,
+            "dest_files": self.dest_files,
+            "dest_where": self.dest_where,
+            "present_files": self.present_files,
+            "files_total": self.files_total,
+            "files_done": self.files_done,
+            "files_remaining": self.files_remaining,
+            "bytes_total": self.bytes_total,
+            "bytes_done": self.bytes_done,
+            "bytes_remaining": self.bytes_remaining,
+            "speed_bps": round(self.speed_bps, 1),
+            "eta_seconds": self.eta_seconds,
+            "elapsed_seconds": round(time.monotonic() - self.started_at, 1),
+        }
+
+
+@dataclass
+class RestoreProgress(SpeedMeter):
     restore_id: str
     file_name: str
     target_path: str
@@ -114,21 +205,6 @@ class RestoreProgress:
 
     _window_bytes: int = 0
     _window_start: float = field(default_factory=time.monotonic)
-
-    def add_bytes(self, count: int) -> None:
-        self.bytes_done += count
-        self._window_bytes += count
-
-    def tick(self) -> None:
-        now = time.monotonic()
-        elapsed = now - self._window_start
-        if elapsed <= 0:
-            return
-        instant = self._window_bytes / elapsed
-        weight = min(1.0, elapsed / SPEED_SMOOTHING)
-        self.speed_bps = self.speed_bps + (instant - self.speed_bps) * weight
-        self._window_bytes = 0
-        self._window_start = now
 
     def snapshot(self) -> dict:
         remaining = max(0, self.bytes_total - self.bytes_done)
@@ -150,6 +226,9 @@ class RestoreProgress:
 class ProgressHub:
     def __init__(self) -> None:
         self.jobs: dict[int, JobProgress] = {}
+        # Kept apart from the sync jobs: the two numbering schemes are independent and a
+        # single dictionary would have job 3 overwrite download job 3.
+        self.downloads: dict[int, DownloadProgress] = {}
         self.restores: dict[str, RestoreProgress] = {}
         self._subscribers: set[asyncio.Queue] = set()
         self._task: asyncio.Task | None = None
@@ -162,6 +241,14 @@ class ProgressHub:
     def end_job(self, job_id: int) -> None:
         self.jobs.pop(job_id, None)
 
+    def start_download(self, job_id: int, name: str) -> DownloadProgress:
+        progress = DownloadProgress(job_id=job_id, name=name)
+        self.downloads[job_id] = progress
+        return progress
+
+    def end_download(self, job_id: int) -> None:
+        self.downloads.pop(job_id, None)
+
     def start_restore(self, restore: RestoreProgress) -> RestoreProgress:
         self.restores[restore.restore_id] = restore
         return restore
@@ -170,6 +257,7 @@ class ProgressHub:
         return {
             "type": "progress",
             "jobs": [job.snapshot() for job in self.jobs.values()],
+            "downloads": [job.snapshot() for job in self.downloads.values()],
             "restores": [restore.snapshot() for restore in self.restores.values()],
         }
 
@@ -185,6 +273,8 @@ class ProgressHub:
         while True:
             await asyncio.sleep(settings.progress_interval_seconds)
             for job in self.jobs.values():
+                job.tick()
+            for job in self.downloads.values():
                 job.tick()
             for restore in self.restores.values():
                 restore.tick()

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router";
 import {
   Archive,
+  CloudDownload,
   CloudUpload,
   Gauge,
   History,
@@ -24,6 +25,7 @@ import { Pill } from "./ui";
 const NAV = [
   { to: "/", label: "Dashboard", icon: Gauge, end: true },
   { to: "/jobs", label: "Sync jobs", icon: CloudUpload, end: false },
+  { to: "/downloads", label: "Download jobs", icon: CloudDownload, end: false },
   { to: "/accounts", label: "Telegram accounts", icon: Users, end: false },
   { to: "/files", label: "Files and restore", icon: Archive, end: false },
   { to: "/runs", label: "History", icon: History, end: false },
@@ -34,6 +36,7 @@ const NAV = [
 const TITLES: Record<string, string> = {
   "/": "Dashboard",
   "/jobs": "Sync jobs",
+  "/downloads": "Download jobs",
   "/accounts": "Telegram accounts",
   "/files": "Files and restore",
   "/runs": "Run history",
@@ -43,7 +46,7 @@ const TITLES: Record<string, string> = {
 
 export default function Shell() {
   const { user, logout } = useAuth();
-  const { jobs, connected } = useProgress();
+  const { jobs, downloads, connected } = useProgress();
   const location = useLocation();
   const [theme, setTheme] = useState<Theme>(readTheme);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -73,6 +76,7 @@ export default function Shell() {
   }, [menuOpen]);
 
   const running = jobs.size;
+  const downloading = downloads.size;
   const title =
     TITLES[location.pathname] ??
     (location.pathname.startsWith("/jobs/") ? "Job detail" : "tgbackup");
@@ -108,10 +112,10 @@ export default function Shell() {
             >
               <Icon size={17} />
               <span>{label}</span>
-              {to === "/jobs" && running > 0 ? (
+              {(to === "/jobs" && running > 0) || (to === "/downloads" && downloading > 0) ? (
                 <span className="badge">
                   <Pill tone="ok" live>
-                    {running}
+                    {to === "/jobs" ? running : downloading}
                   </Pill>
                 </span>
               ) : null}

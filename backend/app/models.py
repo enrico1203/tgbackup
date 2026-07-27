@@ -119,6 +119,65 @@ class SyncJob(Base):
     channel: Mapped[Channel] = relationship()
 
 
+class DownloadJob(Base):
+    """The inverse of a sync job: a channel poured back into a folder or a remote.
+
+    It owns no file table of its own. What has to be downloaded is the channel index
+    minus what already sits at the destination, recomputed at every run: the destination
+    is the state, so there is nothing that can drift away from it.
+    """
+
+    __tablename__ = "download_jobs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128))
+    account_id: Mapped[int] = mapped_column(ForeignKey("telegram_accounts.id", ondelete="CASCADE"))
+    channel_id: Mapped[int] = mapped_column(ForeignKey("channels.id", ondelete="CASCADE"))
+
+    # local: folder mounted in the container, and it has to be writable. rclone: remote
+    # written through the API, no mount.
+    dest_type: Mapped[str] = mapped_column(String(16), default="local")
+    local_path: Mapped[str] = mapped_column(Text, default="")
+    remote: Mapped[str | None] = mapped_column(Text)
+
+    interval_hours: Mapped[float] = mapped_column(Float, default=24.0)
+
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # idle, running, error
+    status: Mapped[str] = mapped_column(String(32), default="idle")
+    phase: Mapped[str | None] = mapped_column(String(32))
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    account: Mapped[TelegramAccount] = relationship()
+    channel: Mapped[Channel] = relationship()
+
+
+class DownloadRun(Base):
+    __tablename__ = "download_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("download_jobs.id", ondelete="CASCADE"))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # running, ok, error, stopped
+    status: Mapped[str] = mapped_column(String(16), default="running")
+    # Files the channel index holds for this channel.
+    indexed_files: Mapped[int] = mapped_column(Integer, default=0)
+    indexed_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    # Already at the destination when the run started, and therefore skipped.
+    present_files: Mapped[int] = mapped_column(Integer, default=0)
+    present_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    downloaded_files: Mapped[int] = mapped_column(Integer, default=0)
+    downloaded_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    failed_files: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(Text)
+
+
 class FileEntry(Base):
     __tablename__ = "file_entries"
     __table_args__ = (

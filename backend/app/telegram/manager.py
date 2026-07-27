@@ -55,9 +55,9 @@ class TelegramManager:
         self._clients: dict[int, TelegramClient] = {}
         self._pending: dict[int, _Pending] = {}
         # Several jobs on the same account would fight over the ceiling of 20
-        # connections per data center: the upload phase is serialized.
-        self._upload_locks: dict[int, asyncio.Semaphore] = {}
-        self._upload_limits: dict[int, int] = {}
+        # connections per data center: the transfer phases are serialized.
+        self._transfer_locks: dict[int, asyncio.Semaphore] = {}
+        self._transfer_limits: dict[int, int] = {}
         # The event loop holds only a weak reference to a running task. Without a strong
         # one the disconnect of an expired sign-in could be collected before it runs.
         self._sweeping: set[asyncio.Task] = set()
@@ -139,8 +139,11 @@ class TelegramManager:
             raise TelegramError("Telegram account not linked")
         return await self._connect(account)
 
-    def upload_lock(self, account_id: int, limit: int = 2) -> asyncio.Semaphore:
-        """Semaphore limiting how many jobs upload at the same time on this account.
+    def transfer_lock(self, account_id: int, limit: int = 2) -> asyncio.Semaphore:
+        """Semaphore limiting how many jobs transfer at the same time on this account.
+
+        Uploads and downloads share it: the ceiling of 20 connections is per data center
+        and does not care in which direction the bytes are going.
 
         When the limit changes a new semaphore is created: jobs already uploading will
         release the old one, so for the duration of a run the effective concurrency can
@@ -149,11 +152,11 @@ class TelegramManager:
         to change it.
         """
         limit = max(1, limit)
-        existing = self._upload_locks.get(account_id)
-        if existing is None or self._upload_limits.get(account_id) != limit:
-            self._upload_locks[account_id] = asyncio.Semaphore(limit)
-            self._upload_limits[account_id] = limit
-        return self._upload_locks[account_id]
+        existing = self._transfer_locks.get(account_id)
+        if existing is None or self._transfer_limits.get(account_id) != limit:
+            self._transfer_locks[account_id] = asyncio.Semaphore(limit)
+            self._transfer_limits[account_id] = limit
+        return self._transfer_locks[account_id]
 
     # Sign in
 

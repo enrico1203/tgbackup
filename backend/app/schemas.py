@@ -178,6 +178,83 @@ class JobRunOut(Model):
     error: str | None
 
 
+# Download job
+
+
+class DownloadJobIn(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    account_id: int
+    channel_id: int
+    dest_type: Literal["local", "rclone"] = "local"
+    local_path: str = ""
+    remote: str | None = None
+    interval_hours: float = Field(gt=0, le=24 * 365)
+    enabled: bool = True
+
+
+class DownloadJobUpdate(BaseModel):
+    name: str | None = None
+    channel_id: int | None = None
+    dest_type: Literal["local", "rclone"] | None = None
+    local_path: str | None = None
+    remote: str | None = None
+    interval_hours: float | None = Field(default=None, gt=0, le=24 * 365)
+    enabled: bool | None = None
+
+
+class DownloadStats(BaseModel):
+    # What the channel index holds, read live.
+    files_indexed: int = 0
+    bytes_indexed: int = 0
+    # What was at the destination at the end of the last run, that is what was already
+    # there plus what that run wrote. Nothing is recomputed outside a run: only a run
+    # looks at the destination.
+    files_at_destination: int = 0
+    bytes_at_destination: int = 0
+    files_failed: int = 0
+    last_run_at: datetime | None = None
+
+
+class DownloadJobOut(Model):
+    id: int
+    name: str
+    account_id: int
+    channel_id: int
+    dest_type: str
+    local_path: str
+    remote: str | None
+    interval_hours: float
+    enabled: bool
+    status: str
+    phase: str | None
+    last_error: str | None
+    last_run_at: datetime | None
+    last_finished_at: datetime | None
+    next_run_at: datetime | None
+    created_at: datetime
+
+    account_label: str = ""
+    channel_title: str = ""
+    channel_tg_id: int = 0
+    stats: DownloadStats = DownloadStats()
+
+
+class DownloadRunOut(Model):
+    id: int
+    job_id: int
+    started_at: datetime
+    finished_at: datetime | None
+    status: str
+    indexed_files: int
+    indexed_bytes: int
+    present_files: int
+    present_bytes: int
+    downloaded_files: int
+    downloaded_bytes: int
+    failed_files: int
+    error: str | None
+
+
 # Files
 
 
@@ -323,6 +400,8 @@ class DashboardOut(BaseModel):
     accounts_connected: int
     jobs: int
     jobs_running: int
+    downloads: int
+    downloads_running: int
     files_total: int
     files_uploaded: int
     files_pending: int

@@ -1,16 +1,17 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router";
-import { Activity, CloudUpload, HardDrive, Users } from "lucide-react";
+import { Activity, CloudDownload, CloudUpload, HardDrive, Users } from "lucide-react";
 
 import { api } from "../lib/api";
 import { formatBytes, formatDateTime, formatSpeed, percent } from "../lib/format";
 import { useProgress } from "../lib/progress";
 import type { Dashboard as DashboardData } from "../lib/types";
+import DownloadActivity, { downloadPhaseLabel } from "../components/DownloadActivity";
 import JobActivity, { phaseLabel } from "../components/JobActivity";
 import { Card, CardHead, Empty, Pill, Sparkline, Stat } from "../components/ui";
 
 export default function Dashboard() {
-  const { jobs, history } = useProgress();
+  const { jobs, downloads, history, downloadHistory } = useProgress();
   const { data } = useQuery({
     queryKey: ["dashboard"],
     queryFn: () => api.get<DashboardData>("/api/dashboard"),
@@ -18,7 +19,11 @@ export default function Dashboard() {
   });
 
   const active = Array.from(jobs.values());
-  const totalSpeed = active.reduce((sum, job) => sum + job.speed_bps, 0);
+  const activeDownloads = Array.from(downloads.values());
+  const running = active.length + activeDownloads.length;
+  const totalSpeed =
+    active.reduce((sum, job) => sum + job.speed_bps, 0) +
+    activeDownloads.reduce((sum, job) => sum + job.speed_bps, 0);
 
   return (
     <>
@@ -26,7 +31,7 @@ export default function Dashboard() {
         <Stat
           label="Overall speed"
           value={formatSpeed(totalSpeed)}
-          hint={active.length ? `${active.length} jobs running` : "no active jobs"}
+          hint={running ? `${running} jobs running` : "no active jobs"}
         />
         <Stat
           label="Files saved"
@@ -47,25 +52,26 @@ export default function Dashboard() {
 
       <Card>
         <CardHead title="Running jobs">
-          {active.length > 0 ? (
+          {running > 0 ? (
             <Pill tone="ok" live>
-              {active.length} active
+              {running} active
             </Pill>
           ) : null}
         </CardHead>
 
-        {active.length === 0 ? (
+        {running === 0 ? (
           <Empty
             icon={<Activity size={26} color="var(--muted)" />}
             title="No jobs running"
-            hint="When a sync job starts, upload speed, remaining files and estimated time show up here live."
+            hint="When a job starts, transfer speed, remaining files and estimated time show up here live."
           />
         ) : (
           <div className="card-body">
             {active.map((job) => (
-              <div key={job.job_id} style={{ display: "grid", gap: 10 }}>
+              <div key={`sync-${job.job_id}`} style={{ display: "grid", gap: 10 }}>
                 <div className="row" style={{ justifyContent: "space-between" }}>
-                  <div style={{ minWidth: 0 }}>
+                  <div className="row" style={{ minWidth: 0, gap: 8 }}>
+                    <CloudUpload size={14} color="var(--muted)" />
                     <span style={{ fontWeight: 600 }}>{job.name}</span>
                   </div>
                   <Pill
@@ -82,6 +88,31 @@ export default function Dashboard() {
 
                 {job.phase === "upload" ? (
                   <Sparkline values={history.get(job.job_id) ?? []} />
+                ) : null}
+              </div>
+            ))}
+
+            {activeDownloads.map((job) => (
+              <div key={`download-${job.job_id}`} style={{ display: "grid", gap: 10 }}>
+                <div className="row" style={{ justifyContent: "space-between" }}>
+                  <div className="row" style={{ minWidth: 0, gap: 8 }}>
+                    <CloudDownload size={14} color="var(--muted)" />
+                    <span style={{ fontWeight: 600 }}>{job.name}</span>
+                  </div>
+                  <Pill
+                    tone={
+                      job.phase === "download" ? "ok" : job.phase === "waiting" ? "mute" : "warn"
+                    }
+                    live={job.phase !== "waiting"}
+                  >
+                    {downloadPhaseLabel(job.phase)}
+                  </Pill>
+                </div>
+
+                <DownloadActivity progress={job} />
+
+                {job.phase === "download" ? (
+                  <Sparkline values={downloadHistory.get(job.job_id) ?? []} />
                 ) : null}
               </div>
             ))}
@@ -157,9 +188,9 @@ export default function Dashboard() {
           hint={<Link to="/jobs">Manage the jobs</Link>}
         />
         <Stat
-          label="Files pending"
-          value={(data?.files_pending ?? 0).toLocaleString("en-US")}
-          hint="to upload on the next run"
+          label="Download jobs configured"
+          value={data?.downloads ?? 0}
+          hint={<Link to="/downloads">Bring a channel back</Link>}
         />
         <Stat
           label="Total tracked size"

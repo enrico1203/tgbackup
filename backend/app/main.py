@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
-from .api import accounts, auth, dashboard, export, files, jobs, rclone, ws
+from .api import accounts, auth, dashboard, downloads, export, files, jobs, rclone, ws
 from .db import SessionLocal, engine
 from .migrate import upgrade_database
 from .models import User
@@ -64,6 +64,7 @@ app = FastAPI(title="tgbackup", version="1.0.0", lifespan=lifespan)
 app.include_router(auth.router)
 app.include_router(accounts.router)
 app.include_router(jobs.router)
+app.include_router(downloads.router)
 app.include_router(files.router)
 app.include_router(dashboard.router)
 app.include_router(export.router)

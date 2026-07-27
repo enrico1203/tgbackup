@@ -1,8 +1,12 @@
-"""Supervisor for the sync jobs.
+"""Supervisor for the sync and download jobs.
 
 The `running` state lives in the database, not in memory: the same job can never start
 twice in parallel even when its execution lasts days, and a process restart leaves no
 ghost jobs stuck.
+
+Sync jobs and download jobs are two tables with two independent numbering schemes, so
+everything here is keyed by the pair (kind, id): job 3 and download job 3 are two
+different jobs and must be able to run at the same time.
 """
 
 from __future__ import annotations
@@ -16,66 +20,82 @@ from sqlalchemy import select, update
 
 from ..config import settings
 from ..db import SessionLocal
-from ..models import JobRun, SyncJob
+from ..models import DownloadJob, DownloadRun, JobRun, SyncJob
+from .download import execute_download_job
 from .runner import StopSignal, execute_job
 
 log = logging.getLogger(__name__)
 
+SYNC = "sync"
+DOWNLOAD = "download"
+
+_MODELS = {SYNC: SyncJob, DOWNLOAD: DownloadJob}
+_RUNS = {SYNC: JobRun, DOWNLOAD: DownloadRun}
+_EXECUTORS = {SYNC: execute_job, DOWNLOAD: execute_download_job}
+
+Key = tuple[str, int]
+
 
 class Scheduler:
     def __init__(self) -> None:
-        self._tasks: dict[int, asyncio.Task] = {}
-        self._cancels: dict[int, StopSignal] = {}
+        self._tasks: dict[Key, asyncio.Task] = {}
+        self._cancels: dict[Key, StopSignal] = {}
         self._loop_task: asyncio.Task | None = None
 
     async def reset_stale(self) -> None:
         """Brings back to idle the jobs left running by an abrupt process stop."""
         async with SessionLocal() as session:
-            await session.execute(
-                update(SyncJob).where(SyncJob.status == "running").values(status="idle", phase=None)
-            )
-            await session.execute(
-                update(JobRun)
-                .where(JobRun.status == "running")
-                .values(status="stopped", finished_at=datetime.now(UTC))
-            )
+            for kind, model in _MODELS.items():
+                await session.execute(
+                    update(model)
+                    .where(model.status == "running")
+                    .values(status="idle", phase=None)
+                )
+                run_model = _RUNS[kind]
+                await session.execute(
+                    update(run_model)
+                    .where(run_model.status == "running")
+                    .values(status="stopped", finished_at=datetime.now(UTC))
+                )
             await session.commit()
 
-    def is_running(self, job_id: int) -> bool:
-        task = self._tasks.get(job_id)
+    def is_running(self, kind: str, job_id: int) -> bool:
+        task = self._tasks.get((kind, job_id))
         return task is not None and not task.done()
 
-    async def trigger(self, job_id: int) -> bool:
+    async def trigger(self, kind: str, job_id: int) -> bool:
         """Starts a job right away. Returns False if it was already running."""
-        if self.is_running(job_id):
+        if self.is_running(kind, job_id):
             return False
 
         async with SessionLocal() as session:
-            job = await session.get(SyncJob, job_id)
+            job = await session.get(_MODELS[kind], job_id)
             if job is None:
                 return False
             job.status = "running"
-            job.phase = "scan"
+            job.phase = "index" if kind == DOWNLOAD else "scan"
             await session.commit()
 
-        self._spawn(job_id)
+        self._spawn(kind, job_id)
         return True
 
-    def _spawn(self, job_id: int) -> None:
+    def _spawn(self, kind: str, job_id: int) -> None:
+        key = (kind, job_id)
         cancel = StopSignal()
-        self._cancels[job_id] = cancel
+        self._cancels[key] = cancel
+        execute = _EXECUTORS[kind]
 
         async def wrapper() -> None:
             try:
-                await execute_job(job_id, cancel)
+                await execute(job_id, cancel)
             finally:
-                self._tasks.pop(job_id, None)
-                self._cancels.pop(job_id, None)
+                self._tasks.pop(key, None)
+                self._cancels.pop(key, None)
 
-        self._tasks[job_id] = asyncio.create_task(wrapper(), name=f"job-{job_id}")
+        self._tasks[key] = asyncio.create_task(wrapper(), name=f"{kind}-{job_id}")
 
-    async def stop(self, job_id: int) -> bool:
-        cancel = self._cancels.get(job_id)
+    async def stop(self, kind: str, job_id: int) -> bool:
+        cancel = self._cancels.get((kind, job_id))
         if cancel is None:
             return False
         cancel.set("user")
@@ -83,24 +103,23 @@ class Scheduler:
 
     async def _tick(self) -> None:
         now = datetime.now(UTC)
+        due: list[Key] = []
         async with SessionLocal() as session:
-            result = await session.execute(
-                select(SyncJob).where(
-                    SyncJob.enabled.is_(True),
-                    SyncJob.status == "idle",
+            for kind, model in _MODELS.items():
+                result = await session.execute(
+                    select(model).where(model.enabled.is_(True), model.status == "idle")
                 )
-            )
-            due = [
-                job.id
-                for job in result.scalars()
-                if job.next_run_at is None or _as_utc(job.next_run_at) <= now
-            ]
+                due.extend(
+                    (kind, job.id)
+                    for job in result.scalars()
+                    if job.next_run_at is None or _as_utc(job.next_run_at) <= now
+                )
 
-        for job_id in due:
-            if self.is_running(job_id):
+        for kind, job_id in due:
+            if self.is_running(kind, job_id):
                 continue
-            log.info("Starting job %d", job_id)
-            await self.trigger(job_id)
+            log.info("Starting %s job %d", kind, job_id)
+            await self.trigger(kind, job_id)
 
     async def _loop(self) -> None:
         while True:

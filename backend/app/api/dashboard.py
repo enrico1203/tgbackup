@@ -2,7 +2,7 @@ from fastapi import APIRouter
 from sqlalchemy import case, func, select
 
 from ..deps import ActiveUserDep, SessionDep
-from ..models import FileEntry, JobRun, SyncJob, TelegramAccount
+from ..models import DownloadJob, FileEntry, JobRun, SyncJob, TelegramAccount
 from ..schemas import DashboardOut, JobRunOut
 from ..telegram.manager import manager
 
@@ -13,6 +13,7 @@ router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 async def dashboard(session: SessionDep, _: ActiveUserDep) -> DashboardOut:
     accounts = list((await session.execute(select(TelegramAccount))).scalars())
     jobs = list((await session.execute(select(SyncJob))).scalars())
+    downloads = list((await session.execute(select(DownloadJob))).scalars())
 
     uploaded_flag = case((FileEntry.state == "uploaded", 1), else_=0)
     pending_flag = case((FileEntry.state.in_(("pending", "uploading", "stale")), 1), else_=0)
@@ -45,6 +46,8 @@ async def dashboard(session: SessionDep, _: ActiveUserDep) -> DashboardOut:
         accounts_connected=sum(1 for a in accounts if manager.is_connected(a.id)),
         jobs=len(jobs),
         jobs_running=sum(1 for j in jobs if j.status == "running"),
+        downloads=len(downloads),
+        downloads_running=sum(1 for j in downloads if j.status == "running"),
         files_total=row[0],
         files_uploaded=row[1],
         files_pending=row[2],

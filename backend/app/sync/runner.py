@@ -148,7 +148,7 @@ class JobRunner:
             # per account. Only this phase, though: scanning and cleanup can go on in
             # parallel, and waiting has a phase of its own so a queued job does not look
             # stuck.
-            lock = manager.upload_lock(account_id, concurrency)
+            lock = manager.transfer_lock(account_id, concurrency)
             if lock.locked():
                 progress.phase = "waiting"
                 await self._set_phase("waiting")

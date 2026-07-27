@@ -1,13 +1,16 @@
 """Access to rclone remotes without mounting them.
 
-Two commands cover everything:
+Four commands cover everything:
 
   rclone lsjson -R --files-only   lists a whole remote through the API
   rclone cat --offset N --count M reads an exact byte range
+  rclone rcat --size N            writes a file from standard input
+  rclone touch --timestamp        restores the date of a file just written
 
 Listing through the API is far faster than walking a FUSE mount, and ranged reads avoid
 copying files to disk before uploading them: slices go straight from the stream to the
-uploader.
+uploader. Writing works the same way in the other direction, the bytes coming out of
+Telegram go into the pipe without ever touching the disk.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ import os
 import re
 import shutil
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from ..config import settings
 
@@ -270,8 +274,6 @@ def _parse_mtime(value: str) -> int:
     if not value:
         return 0
     try:
-        from datetime import datetime
-
         return int(datetime.fromisoformat(value).timestamp() * 1_000_000_000)
     except ValueError:
         return 0
@@ -396,3 +398,125 @@ class RemoteSliceReader:
                 if stderr
                 else f"Reading {self._remote_file} stopped at {self._read}/{self._length} bytes"
             )
+
+
+async def touch(remote_file: str, when: datetime) -> None:
+    """Sets the modification time of a file already on the remote.
+
+    The timestamp is given in UTC, which is how rclone reads it: verified by writing a
+    file through a remote of type local from a container set to Europe/Rome, where a
+    timestamp read as local time would have landed two hours out. Backends that cannot
+    store a date make this fail, so the caller decides what a failure is worth: for a
+    file that has arrived complete it is not worth much.
+    """
+    await _run(
+        [
+            "touch",
+            "--no-create",
+            "--timestamp",
+            when.strftime("%Y-%m-%dT%H:%M:%S"),
+            remote_file,
+        ],
+        timeout=120,
+    )
+
+
+class RemoteWriter:
+    """A file being written on a remote, fed through the standard input of `rclone rcat`.
+
+    Nothing is staged on disk: the bytes arriving from Telegram go straight into the pipe.
+    A pipe accepts them in order only, which is why the caller has to hand them over in
+    order, and there is no temporary name: rclone finalises an object at the end of the
+    stream, and a leftover name on a remote is far harder to clean up than a local one. An
+    interrupted transfer leaves either nothing or an object shorter than it should be, and
+    a run that comes later downloads it again because the size does not match.
+    """
+
+    # Told apart from a local file, which is written part by part at the right offset.
+    random_access = False
+
+    def __init__(self, remote_file: str, size: int, mtime_ns: int = 0) -> None:
+        self.path = remote_file
+        self._size = size
+        self._mtime_ns = mtime_ns
+        self._process: asyncio.subprocess.Process | None = None
+        self._committed = False
+
+    async def __aenter__(self) -> RemoteWriter:
+        self._process = await asyncio.create_subprocess_exec(
+            RCLONE,
+            *BASE_ARGS,
+            "rcat",
+            # Without the size rclone buffers the stream to decide how to upload it.
+            "--size",
+            str(self._size),
+            self.path,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+            limit=8 * 1024 * 1024,
+        )
+        return self
+
+    async def write(self, data: bytes) -> None:
+        process = self._process
+        assert process is not None and process.stdin is not None
+        try:
+            process.stdin.write(data)
+            await process.stdin.drain()
+        except (BrokenPipeError, ConnectionResetError) as exc:
+            # rclone died: its stderr says why, the broken pipe says nothing.
+            raise RcloneError(await self._failure()) from exc
+
+    async def _failure(self) -> str:
+        process = self._process
+        if process is None:
+            return f"rclone is not writing {self.path}"
+        stderr = b""
+        if process.stderr is not None:
+            try:
+                stderr = await asyncio.wait_for(process.stderr.read(), 10)
+            except Exception:
+                stderr = b""
+        await process.wait()
+        return _clean_error(stderr) if stderr else f"Writing {self.path} failed"
+
+    async def commit(self) -> None:
+        """Closes the stream and waits for rclone to finish writing the file."""
+        process = self._process
+        assert process is not None and process.stdin is not None
+        try:
+            process.stdin.close()
+            await process.stdin.wait_closed()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+        stderr = b""
+        if process.stderr is not None:
+            stderr = await process.stderr.read()
+        await process.wait()
+        if process.returncode != 0:
+            raise RcloneError(
+                _clean_error(stderr) if stderr else f"Writing {self.path} failed"
+            )
+        self._committed = True
+
+        if self._mtime_ns > 0:
+            # Best effort: a backend that refuses to store a date is no reason to lose a
+            # file that has arrived complete.
+            stamp = datetime.fromtimestamp(self._mtime_ns / 1_000_000_000, UTC)
+            try:
+                await touch(self.path, stamp)
+            except RcloneError as exc:
+                log.warning("Setting the date of %s failed: %s", self.path, exc)
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        process = self._process
+        if process is None or self._committed:
+            return
+        if process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+        await process.wait()

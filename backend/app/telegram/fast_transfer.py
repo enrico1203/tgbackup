@@ -43,6 +43,10 @@ DOWNLOAD_PART_SIZE = 1024 * 1024
 BIG_FILE_THRESHOLD = 10 * 1024 * 1024
 MAX_PARTS = 8000
 
+# How many parts an ordered download may hold in memory while waiting for the missing
+# one. It bounds the buffer at 32MB per file, whatever the size of the file.
+STREAM_WINDOW_PARTS = 32
+
 ProgressCallback = Callable[[int], None]
 
 
@@ -272,32 +276,24 @@ async def upload_slice(
     return InputFile(file_id, part_count, file_name, md5.hexdigest())
 
 
-async def download_document(
-    client: TelegramClient,
-    document: Document,
-    out_fd: int,
-    base_offset: int,
-    on_progress: ProgressCallback | None = None,
-    cancel=None,
-) -> int:
-    """Downloads a document in parallel, writing it at `base_offset` inside `out_fd`.
-
-    Positional writes are used, so the senders can write at the same time without
-    fighting over the file position.
-    """
-    location = InputDocumentFileLocation(
+def _file_location(document: Document) -> InputDocumentFileLocation:
+    return InputDocumentFileLocation(
         id=document.id,
         access_hash=document.access_hash,
         file_reference=document.file_reference,
         thumb_size="",
     )
-    size = document.size
-    connections = connection_count(size)
-    part_count = math.ceil(size / DOWNLOAD_PART_SIZE)
-    stride = DOWNLOAD_PART_SIZE * connections
 
+
+async def _download_senders(
+    client: TelegramClient, document: Document, connections: int
+) -> list[_DownloadSender]:
+    """One sender per connection, each taking one part out of `connections`."""
+    location = _file_location(document)
+    part_count = math.ceil(document.size / DOWNLOAD_PART_SIZE)
+    stride = DOWNLOAD_PART_SIZE * connections
     transferrer = ParallelTransferrer(client, document.dc_id)
-    senders = [
+    return [
         _DownloadSender(
             client,
             await transferrer._create_sender(),
@@ -310,6 +306,25 @@ async def download_document(
         )
         for index in range(connections)
     ]
+
+
+async def download_document(
+    client: TelegramClient,
+    document: Document,
+    out_fd: int,
+    base_offset: int,
+    on_progress: ProgressCallback | None = None,
+    cancel=None,
+    max_connections: int = MAX_CONNECTIONS,
+) -> int:
+    """Downloads a document in parallel, writing it at `base_offset` inside `out_fd`.
+
+    Positional writes are used, so the senders can write at the same time without
+    fighting over the file position.
+    """
+    size = document.size
+    connections = connection_count(size, max(1, min(max_connections, MAX_CONNECTIONS)))
+    senders = await _download_senders(client, document, connections)
 
     written = 0
     lock = asyncio.Lock()
@@ -339,3 +354,85 @@ async def download_document(
         )
 
     return written
+
+
+async def stream_document(
+    client: TelegramClient,
+    document: Document,
+    on_progress: ProgressCallback | None = None,
+    cancel=None,
+    max_connections: int = MAX_CONNECTIONS,
+):
+    """Yields the bytes of a document in order, downloading them in parallel.
+
+    `download_document` writes each part where it belongs with pwrite, which a pipe cannot
+    do: a destination reached through `rclone rcat` needs the bytes in order, from the
+    first to the last. Parallelism is kept anyway, chunks that arrive early wait in a
+    window of `STREAM_WINDOW_PARTS` parts until the missing one shows up, so memory stays
+    bounded whatever the size of the file.
+
+    No sender can block for good: a sender only waits when it is a whole window ahead of
+    what has been yielded, and the part that is being waited for always belongs to a
+    sender that is not ahead at all, because a single sender delivers its own parts in
+    order.
+    """
+    size = document.size
+    connections = connection_count(size, max(1, min(max_connections, MAX_CONNECTIONS)))
+    senders = await _download_senders(client, document, connections)
+
+    window = STREAM_WINDOW_PARTS * DOWNLOAD_PART_SIZE
+    ready: dict[int, bytes] = {}
+    emitted = 0
+    condition = asyncio.Condition()
+
+    async def pump(sender: _DownloadSender) -> None:
+        try:
+            while True:
+                if cancel is not None and cancel.is_set():
+                    raise asyncio.CancelledError("Download interrupted")
+                item = await sender.next()
+                if item is None:
+                    return
+                offset, data = item
+                if not data:
+                    return
+                async with condition:
+                    while offset - emitted >= window:
+                        await condition.wait()
+                    ready[offset] = data
+                    condition.notify_all()
+        finally:
+            # A sender that stops, whether it is done or has failed, has to wake the
+            # consumer up: otherwise a missing part would leave it waiting for ever.
+            async with condition:
+                condition.notify_all()
+
+    tasks = [asyncio.create_task(pump(sender)) for sender in senders]
+    try:
+        while emitted < size:
+            async with condition:
+                while emitted not in ready:
+                    if all(task.done() for task in tasks):
+                        for task in tasks:
+                            if task.exception() is not None:
+                                raise task.exception()
+                        raise RuntimeError(
+                            f"The document ended at {emitted} bytes out of {size}"
+                        )
+                    await condition.wait()
+                chunk = ready.pop(emitted)
+                emitted += len(chunk)
+                condition.notify_all()
+
+            # Outside the lock: while the caller writes this chunk to its destination the
+            # senders have to keep downloading the next ones.
+            if on_progress is not None:
+                on_progress(len(chunk))
+            yield chunk
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(
+            *(sender.disconnect() for sender in senders), return_exceptions=True
+        )
