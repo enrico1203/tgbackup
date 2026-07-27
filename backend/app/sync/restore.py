@@ -1,13 +1,18 @@
-"""Rebuilding a file from its parts on Telegram.
+"""Rebuilding a single file from its parts on Telegram.
 
-The parts are separate documents, each with its own message id. They are downloaded in
-order and written at their position inside a single destination file, so the result is
-byte for byte identical to the original.
+The parts are separate documents, each with its own message id. Put back together they
+give a file byte for byte identical to the original.
+
+Where it lands is up to the caller. With no destination it goes to `data/restore/`, which
+is what the Files page has always done; the explorer can also ask for a folder mounted in
+the container or an rclone remote, and then it is the same write a download job performs,
+through the same destinations, for one file instead of a channel.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import uuid
@@ -17,8 +22,9 @@ from sqlalchemy import select
 from ..config import settings
 from ..db import SessionLocal
 from ..models import Channel, FileEntry, FilePart, SyncJob
-from ..telegram.fast_transfer import download_document
+from ..telegram.fast_transfer import download_document, stream_document
 from ..telegram.manager import manager
+from .destination import DestinationError, LocalDestination, RcloneDestination
 from .progress import RestoreProgress, hub
 
 log = logging.getLogger(__name__)
@@ -28,7 +34,24 @@ log = logging.getLogger(__name__)
 _running: set[asyncio.Task] = set()
 
 
-async def restore_file(file_id: int) -> str:
+def _build_destination(
+    dest_type: str, target: str, restore_id: str
+) -> LocalDestination | RcloneDestination:
+    """Where the rebuilt file goes, as one of the destinations a download job writes to."""
+    if dest_type == "rclone":
+        if not target.strip():
+            raise ValueError("No remote given")
+        return RcloneDestination(target)
+    if dest_type == "local":
+        if not target.strip():
+            raise ValueError("No folder given")
+        return LocalDestination(target.strip())
+    # The historical destination: a folder of its own inside data/restore, so two
+    # restores of the same path cannot land on each other.
+    return LocalDestination(str(settings.restore_dir / restore_id))
+
+
+async def restore_file(file_id: int, dest_type: str = "container", target: str = "") -> str:
     """Starts the restore and returns the identifier used to follow it."""
     async with SessionLocal() as session:
         entry = await session.get(FileEntry, file_id)
@@ -49,6 +72,7 @@ async def restore_file(file_id: int) -> str:
         rel_path = entry.rel_path
         name = entry.name
         size = entry.size
+        mtime_ns = entry.mtime_ns
         account_id = job.account_id
         peer = manager.input_peer(channel)
 
@@ -56,17 +80,31 @@ async def restore_file(file_id: int) -> str:
         raise ValueError("No parts recorded for this file")
 
     restore_id = uuid.uuid4().hex[:12]
-    target = settings.restore_dir / restore_id / rel_path
+    destination = _build_destination(dest_type, target, restore_id)
+
+    if isinstance(destination, LocalDestination) and dest_type == "container":
+        # This one belongs to the application and is created on demand. The two the user
+        # picks are not: a folder that is not there is a mistake worth reporting.
+        await asyncio.to_thread(os.makedirs, destination.root, 0o755, True)
+
+    # Checked before anything starts, so a wrong path is an error on the button and not a
+    # line in a log ten minutes later.
+    try:
+        await destination.prepare()
+    except DestinationError as exc:
+        raise ValueError(str(exc)) from exc
+
+    separator = "" if destination.label.endswith((":", "/")) else "/"
     progress = RestoreProgress(
         restore_id=restore_id,
         file_name=name,
-        target_path=str(target),
+        target_path=f"{destination.label}{separator}{rel_path}",
         bytes_total=size,
     )
     hub.start_restore(progress)
 
     task = asyncio.create_task(
-        _run_restore(progress, account_id, peer, parts, target),
+        _run_restore(progress, account_id, peer, parts, destination, rel_path, size, mtime_ns),
         name=f"restore-{restore_id}",
     )
     _running.add(task)
@@ -79,19 +117,16 @@ async def _run_restore(
     account_id: int,
     entity,
     parts: list[tuple[int, int, int, int]],
-    target,
+    destination: LocalDestination | RcloneDestination,
+    rel_path: str,
+    size: int,
+    mtime_ns: int,
 ) -> None:
     try:
         client = await manager.get_client(account_id)
 
-        await asyncio.to_thread(os.makedirs, target.parent, 0o755, True)
-        fd = await asyncio.to_thread(os.open, str(target), os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
-        try:
-            # The file is sized upfront: the positional writes of later parts should not
-            # have to extend the file one at a time.
-            await asyncio.to_thread(os.ftruncate, fd, progress.bytes_total)
-
-            for part_index, offset, size, message_id in parts:
+        async with destination.sink(rel_path, size, mtime_ns) as sink:
+            for part_index, offset, part_size, message_id in parts:
                 messages = await client.get_messages(entity, ids=message_id)
                 message = messages if not isinstance(messages, list) else messages[0]
                 if message is None or message.document is None:
@@ -99,19 +134,35 @@ async def _run_restore(
                         f"Message {message_id} of part {part_index + 1} "
                         "no longer exists in the channel"
                     )
-                written = await download_document(
-                    client, message.document, fd, offset, on_progress=progress.add_bytes
-                )
-                if written != size:
+
+                if sink.random_access:
+                    # A local file takes every part at its own offset, so the parts
+                    # download in parallel.
+                    written = await download_document(
+                        client, message.document, sink.fd, offset, on_progress=progress.add_bytes
+                    )
+                else:
+                    # A remote is a pipe: parallel download, bytes handed over in order.
+                    written = 0
+                    async with contextlib.aclosing(
+                        stream_document(
+                            client, message.document, on_progress=progress.add_bytes
+                        )
+                    ) as stream:
+                        async for chunk in stream:
+                            await sink.write(chunk)
+                            written += len(chunk)
+
+                if written != part_size:
                     raise RuntimeError(
                         f"Part {part_index + 1} returned {written} bytes "
-                        f"instead of {size}"
+                        f"instead of {part_size}"
                     )
-        finally:
-            await asyncio.to_thread(os.close, fd)
+
+            await sink.commit()
 
         progress.phase = "done"
-        log.info("Restore completed at %s", target)
+        log.info("Restore completed at %s", progress.target_path)
     except Exception as exc:
         log.exception("Restore failed")
         progress.phase = "error"

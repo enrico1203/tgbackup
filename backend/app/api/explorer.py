@@ -26,15 +26,18 @@ from ..models import Channel, FileEntry, FilePart, SyncJob, TelegramAccount, Use
 from ..schemas import (
     DownloadTicketIn,
     DownloadTicketOut,
+    ExplorerFetchIn,
     ExplorerFile,
     ExplorerFolder,
     ExplorerListing,
+    RestoreOut,
 )
 from ..security import (
     DOWNLOAD_TICKET_TTL_SECONDS,
     create_download_ticket,
     decode_download_ticket,
 )
+from ..sync.restore import restore_file
 from ..telegram.fast_transfer import MAX_CONNECTIONS, stream_document
 from ..telegram.manager import manager
 
@@ -74,6 +77,7 @@ async def list_folder(
     _: ActiveUserDep,
     channel_id: int,
     path: str = "",
+    q: str = "",
     offset: int = 0,
     limit: int = Query(500, ge=1, le=2000),
 ) -> ExplorerListing:
@@ -114,32 +118,59 @@ async def list_folder(
         if current is None or (row.uploaded_at or NO_DATE) >= (current.uploaded_at or NO_DATE):
             unique[row.rel_path] = row
 
+    # A search looks through this folder and everything below it, which is what a search
+    # box in a file manager does. The rows have already been read for the listing, so it
+    # costs no second query: what changes is that a match at any depth is kept, instead
+    # of only the first segment after the prefix.
+    needle = q.strip().casefold()
+
     folders: dict[str, list[int]] = {}
     files: list[ExplorerFile] = []
     bytes_total = 0
 
+    def as_file(row, rel_path: str, fallback: str) -> ExplorerFile:
+        return ExplorerFile(
+            id=row.id,
+            name=row.name or fallback,
+            path=rel_path,
+            size=row.size,
+            parts=row.parts_total,
+            uploaded_at=row.uploaded_at,
+            job_id=row.job_id,
+        )
+
     for rel_path, row in unique.items():
         bytes_total += row.size
         rest = rel_path[len(prefix) :]
+
+        if needle:
+            name = row.name or rest.rsplit("/", 1)[-1]
+            if needle in name.casefold():
+                files.append(as_file(row, rel_path, name))
+            # Every folder on the way down whose own name matches, with the weight of
+            # what it holds. A folder deep in the tree is worth finding too.
+            branches = rest.split("/")[:-1]
+            for depth, segment in enumerate(branches):
+                if needle not in segment.casefold():
+                    continue
+                found = f"{prefix}{'/'.join(branches[: depth + 1])}"
+                counters = folders.get(found)
+                if counters is None:
+                    folders[found] = [1, row.size]
+                else:
+                    counters[0] += 1
+                    counters[1] += row.size
+            continue
+
         cut = rest.find("/")
         if cut == -1:
-            files.append(
-                ExplorerFile(
-                    id=row.id,
-                    name=row.name or rest,
-                    path=rel_path,
-                    size=row.size,
-                    parts=row.parts_total,
-                    uploaded_at=row.uploaded_at,
-                    job_id=row.job_id,
-                )
-            )
+            files.append(as_file(row, rel_path, rest))
             continue
 
         name = rest[:cut]
-        counters = folders.get(name)
+        counters = folders.get(f"{prefix}{name}")
         if counters is None:
-            folders[name] = [1, row.size]
+            folders[f"{prefix}{name}"] = [1, row.size]
         else:
             counters[0] += 1
             counters[1] += row.size
@@ -148,12 +179,14 @@ async def list_folder(
     # the order every file manager shows and the only one that reads as sorted.
     ordered_folders = [
         ExplorerFolder(
-            name=name,
-            path=f"{prefix}{name}",
+            name=found.rsplit("/", 1)[-1],
+            path=found,
             files=counters[0],
             bytes=counters[1],
         )
-        for name, counters in sorted(folders.items(), key=lambda item: item[0].casefold())
+        for found, counters in sorted(
+            folders.items(), key=lambda item: item[0].rsplit("/", 1)[-1].casefold()
+        )
     ]
     files.sort(key=lambda item: item.name.casefold())
 
@@ -164,6 +197,7 @@ async def list_folder(
         channel_id=channel_id,
         channel_title=channel.title,
         path=folder,
+        query=q.strip(),
         folders=[entry for entry in page if isinstance(entry, ExplorerFolder)],
         files=[entry for entry in page if isinstance(entry, ExplorerFile)],
         files_total=len(unique),
@@ -206,6 +240,26 @@ async def create_ticket(
         size=entry.size,
         expires_in=DOWNLOAD_TICKET_TTL_SECONDS,
     )
+
+
+@router.post("/fetch", response_model=RestoreOut)
+async def fetch_to_destination(payload: ExplorerFetchIn, _: ActiveUserDep) -> RestoreOut:
+    """Writes one file to a folder or a remote of this installation, not to the browser.
+
+    This is what a download job does, for a single file: same destinations, same sinks,
+    same refusal to write into a folder mounted read-only. The transfer runs in the
+    background and its progress travels on the same socket as a restore, because that is
+    exactly what it is.
+    """
+    try:
+        restore_id = await restore_file(payload.file_id, payload.dest_type, payload.path)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    from ..sync.progress import hub
+
+    progress = hub.restores[restore_id]
+    return RestoreOut(restore_id=restore_id, target_path=progress.target_path)
 
 
 def _content_disposition(name: str) -> str:

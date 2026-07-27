@@ -897,11 +897,84 @@ button.remote-pill:hover {
   color: var(--muted);
 }
 
+.explorer-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-control);
+  background: var(--elevated);
+}
+
+.explorer-search input {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  flex: 1;
+  min-width: 0;
+}
+
+.explorer-search input:focus {
+  outline: none;
+}
+
 .explorer-note {
   margin: 10px 0 0;
   color: var(--muted);
   font-size: 12.5px;
   max-width: 78ch;
+}
+
+/* Choosing where a download goes: the browser, a folder on the server or a remote. */
+.picker {
+  display: grid;
+  gap: 8px;
+}
+
+.picker-option {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: start;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-control);
+  background: var(--elevated);
+  cursor: pointer;
+}
+
+.picker-option:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--hairline));
+}
+
+.picker-option.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.picker-option input {
+  width: auto;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.picker-icon {
+  color: var(--muted);
+  margin-top: 1px;
+}
+
+.picker-option.active .picker-icon {
+  color: var(--accent);
+}
+
+.picker-hint {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 400;
 }
 
 .explorer {

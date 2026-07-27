@@ -9,18 +9,39 @@ import {
   Download,
   File,
   Folder,
+  FolderSearch,
   FolderTree,
   Hash,
+  HardDrive,
+  Laptop,
+  Search,
+  X,
 } from "lucide-react";
 
 import { api } from "../lib/api";
 import { groupByChannel } from "../lib/channels";
 import { formatBytes, formatDateTime } from "../lib/format";
-import type { DownloadTicket, ExplorerListing, Job } from "../lib/types";
+import type {
+  DownloadTicket,
+  ExplorerFile,
+  ExplorerListing,
+  Job,
+  RcloneStatus,
+  RestoreOut,
+} from "../lib/types";
 import ChannelPicker from "../components/ChannelPicker";
-import { Alert, Card, CardHead, Empty, Spinner } from "../components/ui";
+import RemoteBrowser from "../components/RemoteBrowser";
+import RestorePanel from "../components/RestorePanel";
+import { Alert, Card, CardHead, Empty, Field, Modal, Spinner } from "../components/ui";
 
 const PAGE_SIZE = 500;
+
+// Where the last download went. Typing a path again for every file is the kind of small
+// friction that makes a feature go unused.
+const LAST_LOCAL = "tgbackup.explorer.local";
+const LAST_REMOTE = "tgbackup.explorer.remote";
+
+type Destination = "browser" | "local" | "rclone";
 
 export default function Explorer() {
   const [params, setParams] = useSearchParams();
@@ -31,7 +52,15 @@ export default function Explorer() {
   // leave the explorer, not walk back through the folders opened inside it.
   const [history, setHistory] = useState<string[]>([params.get("path") ?? ""]);
   const [cursor, setCursor] = useState(0);
+  const [term, setTerm] = useState(params.get("q") ?? "");
   const crumbs = useRef<HTMLDivElement>(null);
+
+  // The file whose destination is being chosen, and the choice itself.
+  const [chosen, setChosen] = useState<ExplorerFile | null>(null);
+  const [destination, setDestination] = useState<Destination>("browser");
+  const [localPath, setLocalPath] = useState(() => localStorage.getItem(LAST_LOCAL) ?? "");
+  const [remote, setRemote] = useState(() => localStorage.getItem(LAST_REMOTE) ?? "");
+  const [browsing, setBrowsing] = useState<string | null>(null);
 
   const { data: jobs } = useQuery({
     queryKey: ["jobs"],
@@ -47,13 +76,27 @@ export default function Explorer() {
       ? Number(fromUrl)
       : (groups[0]?.channelId ?? null);
   const path = params.get("path") ?? "";
+  const search = params.get("q") ?? "";
   const segments = path ? path.split("/") : [];
 
+  // Opening a folder ends the search, the way it does in a file manager: the results
+  // came from anywhere below, and staying in them while the folder changes underneath
+  // would show matches that have nothing to do with where you now are.
   const goTo = (channelId: number | null, next: string) => {
     const updated = new URLSearchParams(params);
     if (channelId !== null) updated.set("channel", String(channelId));
     if (next) updated.set("path", next);
     else updated.delete("path");
+    updated.delete("q");
+    setParams(updated);
+    setPage(0);
+  };
+
+  const runSearch = (value: string) => {
+    const updated = new URLSearchParams(params);
+    const trimmed = value.trim();
+    if (trimmed) updated.set("q", trimmed);
+    else updated.delete("q");
     setParams(updated);
     setPage(0);
   };
@@ -75,6 +118,12 @@ export default function Explorer() {
     if (node) node.scrollLeft = node.scrollWidth;
   }, [path, selected]);
 
+  // The box follows the address: opening a folder or a shared link clears what was
+  // typed, rather than leaving a word in the field that is no longer searched for.
+  useEffect(() => {
+    setTerm(search);
+  }, [search]);
+
   const step = (delta: number) => {
     const next = cursor + delta;
     if (next < 0 || next >= history.length) return;
@@ -91,6 +140,7 @@ export default function Explorer() {
   const query = new URLSearchParams();
   query.set("channel_id", String(selected ?? 0));
   query.set("path", path);
+  if (search) query.set("q", search);
   query.set("offset", String(page * PAGE_SIZE));
   query.set("limit", String(PAGE_SIZE));
 
@@ -108,9 +158,44 @@ export default function Explorer() {
   const download = useMutation({
     mutationFn: (fileId: number) =>
       api.post<DownloadTicket>("/api/explorer/ticket", { file_id: fileId }),
-    onSuccess: (ticket) => window.location.assign(ticket.url),
+    onSuccess: (ticket) => {
+      window.location.assign(ticket.url);
+      setChosen(null);
+    },
   });
-  const downloading = download.isPending ? (download.variables as number) : null;
+
+  // The other two destinations are written by the backend, and the transfer shows up in
+  // the panel at the top of the page like any other rebuild.
+  const fetchTo = useMutation({
+    mutationFn: (body: { file_id: number; dest_type: Destination; path: string }) =>
+      api.post<RestoreOut>("/api/explorer/fetch", body),
+    onSuccess: (_result, body) => {
+      if (body.dest_type === "local") localStorage.setItem(LAST_LOCAL, body.path);
+      else localStorage.setItem(LAST_REMOTE, body.path);
+      setChosen(null);
+    },
+  });
+
+  const { data: rcloneStatus } = useQuery({
+    queryKey: ["rclone-status"],
+    queryFn: () => api.get<RcloneStatus>("/api/rclone"),
+    enabled: chosen !== null,
+  });
+
+  const start = () => {
+    if (!chosen) return;
+    if (destination === "browser") {
+      download.mutate(chosen.id);
+      return;
+    }
+    fetchTo.mutate({
+      file_id: chosen.id,
+      dest_type: destination,
+      path: destination === "local" ? localPath.trim() : remote.trim(),
+    });
+  };
+
+  const busy = download.isPending || fetchTo.isPending;
 
   const title = data?.channel_title ?? groups.find((g) => g.channelId === selected)?.title;
   const pages = data ? Math.ceil(data.entries_total / PAGE_SIZE) : 0;
@@ -130,6 +215,8 @@ export default function Explorer() {
 
   return (
     <>
+      <RestorePanel />
+
       <div>
         <span className="section-label">Channels</span>
         <div style={{ marginTop: 10 }}>
@@ -210,6 +297,52 @@ export default function Explorer() {
             </div>
           </div>
 
+          <div className="explorer-search">
+            <Search size={16} color="var(--muted)" style={{ flexShrink: 0 }} />
+            <input
+              value={term}
+              placeholder={
+                path ? `Search in ${segments[segments.length - 1]} and below` : "Search this channel"
+              }
+              onChange={(event) => setTerm(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") runSearch(term);
+                if (event.key === "Escape") runSearch("");
+              }}
+            />
+            {search ? (
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => runSearch("")}
+                aria-label="Clear the search"
+                title="Clear the search"
+              >
+                <X size={16} />
+              </button>
+            ) : null}
+            <button type="button" className="btn ghost small" onClick={() => runSearch(term)}>
+              Search
+            </button>
+          </div>
+
+          {search && data ? (
+            <p className="explorer-note">
+              {data.entries_total.toLocaleString("en-US")}{" "}
+              {data.entries_total === 1 ? "match" : "matches"} for{" "}
+              <span style={{ color: "var(--text)" }}>{search}</span>
+              {path ? (
+                <>
+                  {" "}
+                  in <span className="mono">{path}</span> and below
+                </>
+              ) : (
+                " in the whole channel"
+              )}
+              . Opening a folder leaves the results.
+            </p>
+          ) : null}
+
           <p className="explorer-note">
             Folders and files come from the index in the database, so browsing costs
             nothing. Telegram is contacted only when a file is downloaded, and a file
@@ -256,9 +389,10 @@ export default function Explorer() {
                 <Folder size={16} className="explorer-icon folder" />
                 <span className="explorer-name">
                   {folder.name}
-                  <span className="explorer-sub num">
-                    {folder.files.toLocaleString("en-US")}{" "}
-                    {folder.files === 1 ? "file" : "files"}
+                  <span className={search ? "explorer-sub mono" : "explorer-sub num"}>
+                    {search
+                      ? folder.path
+                      : `${folder.files.toLocaleString("en-US")} ${folder.files === 1 ? "file" : "files"}`}
                   </span>
                 </span>
                 <span className="explorer-size num">{formatBytes(folder.bytes)}</span>
@@ -272,7 +406,14 @@ export default function Explorer() {
                 <File size={16} className="explorer-icon" />
                 <span className="explorer-name">
                   {file.name}
-                  {file.parts > 1 ? (
+                  {/* In a listing the folder is the one you are in and saying so twice
+                      helps nobody. In results it is the only way to tell two files with
+                      the same name apart. */}
+                  {search ? (
+                    <span className="explorer-sub mono">
+                      {file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/")) : "."}
+                    </span>
+                  ) : file.parts > 1 ? (
                     <span className="explorer-sub num">
                       {file.parts} parts, joined while downloading
                     </span>
@@ -284,10 +425,13 @@ export default function Explorer() {
                   <button
                     type="button"
                     className="btn ghost small"
-                    disabled={downloading !== null}
-                    onClick={() => download.mutate(file.id)}
+                    onClick={() => {
+                      setChosen(file);
+                      download.reset();
+                      fetchTo.reset();
+                    }}
                   >
-                    {downloading === file.id ? <Spinner size={13} /> : <Download size={13} />}
+                    <Download size={13} />
                     Download
                   </button>
                 </span>
@@ -320,6 +464,161 @@ export default function Explorer() {
           </div>
         ) : null}
       </Card>
+
+      {chosen ? (
+        <Modal
+          title={`Download ${chosen.name}`}
+          onClose={() => setChosen(null)}
+          footer={
+            <>
+              <button type="button" className="btn ghost" onClick={() => setChosen(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn"
+                disabled={
+                  busy ||
+                  (destination === "local" && !localPath.trim()) ||
+                  (destination === "rclone" && !remote.includes(":"))
+                }
+                onClick={start}
+              >
+                {busy ? <Spinner size={14} /> : <Download size={14} />}
+                {destination === "browser" ? "Download" : "Write it there"}
+              </button>
+            </>
+          }
+        >
+          <div className="row wrap" style={{ gap: 14, color: "var(--muted)", fontSize: 12.5 }}>
+            <span className="num">{formatBytes(chosen.size)}</span>
+            <span className="num">
+              {chosen.parts === 1 ? "one message" : `${chosen.parts} parts, joined on the way`}
+            </span>
+            <span className="mono truncate">{chosen.path}</span>
+          </div>
+
+          <div className="picker">
+            <label className={destination === "browser" ? "picker-option active" : "picker-option"}>
+              <input
+                type="radio"
+                name="destination"
+                checked={destination === "browser"}
+                onChange={() => setDestination("browser")}
+              />
+              <Laptop size={16} className="picker-icon" />
+              <span>
+                <strong>This device</strong>
+                <span className="picker-hint">
+                  Streamed to the browser as the parts arrive, nothing kept on the server.
+                  Phone included. An interrupted download has to start again.
+                </span>
+              </span>
+            </label>
+
+            <label className={destination === "local" ? "picker-option active" : "picker-option"}>
+              <input
+                type="radio"
+                name="destination"
+                checked={destination === "local"}
+                onChange={() => setDestination("local")}
+              />
+              <HardDrive size={16} className="picker-icon" />
+              <span>
+                <strong>Folder on the server</strong>
+                <span className="picker-hint">
+                  Written where the backend can reach it, in the background: you can leave
+                  the page.
+                </span>
+              </span>
+            </label>
+
+            <label className={destination === "rclone" ? "picker-option active" : "picker-option"}>
+              <input
+                type="radio"
+                name="destination"
+                checked={destination === "rclone"}
+                onChange={() => setDestination("rclone")}
+              />
+              <FolderSearch size={16} className="picker-icon" />
+              <span>
+                <strong>Rclone remote</strong>
+                <span className="picker-hint">
+                  Straight into the remote through the API, nothing staged on disk.
+                </span>
+              </span>
+            </label>
+          </div>
+
+          {destination === "local" ? (
+            <Field
+              label="Folder"
+              hint="Path inside the container. It has to be a writable volume: the folders to back up are mounted read-only and are refused here, which is what keeps a download from landing in what a sync job reads. The file keeps its path inside the channel."
+            >
+              <input
+                value={localPath}
+                onChange={(event) => setLocalPath(event.target.value)}
+                placeholder="/mnt/restored"
+                className="mono"
+              />
+            </Field>
+          ) : null}
+
+          {destination === "rclone" ? (
+            <Field
+              label="Remote"
+              hint="Remote name with the colon, optionally followed by a folder. The file keeps its path inside the channel."
+            >
+              <div className="row" style={{ gap: 8 }}>
+                <select
+                  style={{ width: 160 }}
+                  value={(rcloneStatus?.remotes ?? []).find((item) => remote.startsWith(item)) ?? ""}
+                  onChange={(event) => setRemote(event.target.value)}
+                >
+                  <option value="" disabled>
+                    Pick a remote
+                  </option>
+                  {(rcloneStatus?.remotes ?? []).map((item) => (
+                    <option key={item} value={item}>
+                      {item}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  value={remote}
+                  onChange={(event) => setRemote(event.target.value)}
+                  placeholder="mycloud-crypt:Restored"
+                  className="mono"
+                />
+                <button
+                  type="button"
+                  className="btn ghost small"
+                  disabled={!remote.includes(":")}
+                  onClick={() => setBrowsing(remote)}
+                  title="Browse the remote and pick a folder"
+                >
+                  <FolderSearch size={13} />
+                  Browse
+                </button>
+              </div>
+            </Field>
+          ) : null}
+
+          {download.isError ? <Alert>{(download.error as Error).message}</Alert> : null}
+          {fetchTo.isError ? <Alert>{(fetchTo.error as Error).message}</Alert> : null}
+        </Modal>
+      ) : null}
+
+      {browsing !== null ? (
+        <RemoteBrowser
+          remote={browsing}
+          onClose={() => setBrowsing(null)}
+          onPick={(picked) => {
+            setRemote(picked);
+            setBrowsing(null);
+          }}
+        />
+      ) : null}
     </>
   );
 }

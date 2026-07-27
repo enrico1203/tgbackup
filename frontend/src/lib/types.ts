@@ -193,6 +193,7 @@ export interface ExplorerListing {
   channel_id: number;
   channel_title: string;
   path: string;
+  query: string;
   folders: ExplorerFolder[];
   files: ExplorerFile[];
   files_total: number;

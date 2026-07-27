@@ -320,6 +320,10 @@ class ExplorerListing(BaseModel):
     channel_id: int
     channel_title: str
     path: str
+    # What was searched for, echoed back. Empty means this is a plain folder listing and
+    # the entries are the ones directly inside it; set, it means the folders and files
+    # are matches from anywhere below.
+    query: str
     folders: list[ExplorerFolder]
     files: list[ExplorerFile]
     # Files and bytes of this folder and everything below it.
@@ -329,6 +333,14 @@ class ExplorerListing(BaseModel):
     entries_total: int
     offset: int
     limit: int
+
+
+class ExplorerFetchIn(BaseModel):
+    file_id: int
+    # local: a folder mounted in the container, and it has to be writable.
+    # rclone: a remote, written through rcat with nothing staged on disk.
+    dest_type: Literal["local", "rclone"]
+    path: str = Field(min_length=1)
 
 
 class DownloadTicketIn(BaseModel):

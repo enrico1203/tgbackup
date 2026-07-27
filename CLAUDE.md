@@ -208,7 +208,17 @@ of the channel. The rows are selected on `prefix <= rel_path < prefix + "\U0010f
 ignores the case of ASCII letters and the index does not. Folders are assembled in Python from the
 first segment after the prefix, with the count and the bytes of the whole subtree; only entries in
 `uploaded` are shown, since anything else is not in the channel to be opened. A file split into parts
-is one row: the split belongs to the transport. The download is a `StreamingResponse` fed by
+is one row: the split belongs to the transport. Search reuses those same rows instead of a second
+query: it keeps a match at any depth below the current folder, files by name and folders by their own
+name, which is why it costs the same as the listing it replaces.
+
+The destination of a download is chosen in a dialog: the browser, a folder on the server or an rclone
+remote. The last two go through `restore_file`, which now builds a `LocalDestination` or an
+`RcloneDestination` exactly as a download job does, calls `prepare()` before starting so a wrong path
+is an error on the button, and writes through the same sinks, local by part at its offset and remote
+in order through `rcat`. `os.access(W_OK)` is what stops a download landing in a folder a sync job
+reads: those are mounted `:ro` and fail the check. Their progress travels as a restore because that
+is what it is, and `RestorePanel` shows it on both pages. The download is a `StreamingResponse` fed by
 `stream_document`, the same parallel-in, ordered-out mechanism a download job uses for `rclone rcat`,
 so nothing is staged on disk and a 40 GB file needs no 40 GB anywhere. It holds the account transfer
 semaphore for its duration, acquired inside the generator because that is the only place whose exit

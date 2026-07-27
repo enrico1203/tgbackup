@@ -17,8 +17,8 @@ a download job pours a whole channel back into a folder or an rclone remote.
 - **Parallel jobs**: several folders, channels and Telegram accounts at once. The same job never runs
   twice concurrently, even when a run takes days.
 - **Live progress**: upload speed, remaining files and estimated time over a WebSocket.
-- **File explorer**: a channel browsed as a folder tree, read from the index, with any file
-  downloaded straight to the browser.
+- **File explorer**: a channel browsed as a folder tree, read from the index, with search and any
+  file sent to the browser, to a folder on the server or to an rclone remote.
 - **Restore**: downloads all the parts and rebuilds the original file.
 - **Download jobs**: a whole channel back into a folder or an rclone remote, on a schedule, skipping
   what is already there and deleting nothing.
@@ -80,16 +80,32 @@ call, so a channel with 200,000 files opens as fast as an empty one, and the siz
 counts everything below it, not just what sits directly inside. Only files that reached Telegram
 appear: something still waiting to be uploaded is not there to be opened.
 
-**A file split into parts is one file.** The split belongs to the transport, and the explorer shows
-what was backed up. Downloading one is a single click: the parts are fetched in parallel, joined in
-order and streamed to the browser as they arrive, so nothing is written to the server first and a
-40 GB file needs no 40 GB of free space anywhere. This is the difference from Restore on the Files
-page, which rebuilds a file into `data/restore/` inside the container and leaves it there.
+**Search** looks through the folder you are in and everything below it, by name, ignoring case, and
+finds folders as well as files: a folder deep in the tree is worth finding too. It reads the rows
+already loaded for the listing, so it costs no second query and no call to Telegram. Opening a
+result leaves the search, the way a file manager does.
 
-Two things follow from streaming. There is no resume: a download interrupted halfway starts again
-from the beginning, which is the price of never staging the file. And a browser download spends from
-the same budget of 20 connections per data center that the jobs share, so it queues behind a running
-upload on that account exactly as a second job would.
+**A file split into parts is one file.** The split belongs to the transport, and the explorer shows
+what was backed up.
+
+Downloading asks where it should go:
+
+- **This device**: the parts are fetched in parallel, joined in order and streamed to the browser as
+  they arrive, so nothing is written to the server first and a 40 GB file needs no 40 GB of free
+  space anywhere. There is no resume, an interrupted download starts again from the beginning, which
+  is the price of never staging the file.
+- **A folder on the server**: written in the background, so you can leave the page and follow it in
+  the panel at the top. The folder has to be a writable volume, which is what stops a download from
+  landing inside what a sync job reads: those are mounted read-only and are refused here.
+- **An rclone remote**: straight into the remote through the API, nothing staged on disk. The Browse
+  button opens the remote and picks a folder.
+
+The last two are the same write a download job performs, for one file instead of a channel, and in
+both the file keeps the path it has inside the channel. Restore on the Files page still exists and
+still rebuilds into `data/restore/`: it is the same operation with the destination decided for you.
+
+A download spends from the same budget of 20 connections per data center that the jobs share, so it
+queues behind a running upload on that account exactly as a second job would.
 
 The link the browser follows carries a pass valid for that one file and five minutes, not your
 session: a URL ends up in the browser history and in the nginx log, and a session token has no

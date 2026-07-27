@@ -5,17 +5,16 @@ import { Download, ExternalLink, FileStack, Search } from "lucide-react";
 
 import { api } from "../lib/api";
 import { groupByChannel } from "../lib/channels";
-import { formatBytes, formatDateTime, formatDuration, formatSpeed } from "../lib/format";
-import { useProgress } from "../lib/progress";
+import { formatBytes, formatDateTime } from "../lib/format";
 import type { FileEntry, FilePage, Job, RestoreOut } from "../lib/types";
 import ChannelPicker from "../components/ChannelPicker";
+import RestorePanel from "../components/RestorePanel";
 import {
   Alert,
   Card,
   CardHead,
   Empty,
   Pill,
-  ProgressBar,
   Spinner,
 } from "../components/ui";
 
@@ -34,49 +33,6 @@ const STATE_LABELS: Record<string, { text: string; tone: "ok" | "warn" | "bad" |
  *  -100 prefix. It is the same id kept in tg_id. */
 function messageLink(channelTgId: number, messageId: number): string {
   return `https://t.me/c/${channelTgId}/${messageId}`;
-}
-
-function RestorePanel() {
-  const { restores } = useProgress();
-  const items = Array.from(restores.values());
-  if (items.length === 0) return null;
-
-  return (
-    <Card>
-      <CardHead title="Restores in progress" />
-      <div className="card-body">
-        {items.map((restore) => (
-          <div key={restore.restore_id} style={{ display: "grid", gap: 8 }}>
-            <div className="row" style={{ justifyContent: "space-between" }}>
-              <span style={{ fontWeight: 600 }}>{restore.file_name}</span>
-              <Pill
-                tone={restore.phase === "done" ? "ok" : restore.phase === "error" ? "bad" : "accent"}
-                live={restore.phase === "running"}
-              >
-                {restore.phase === "done"
-                  ? "Completed"
-                  : restore.phase === "error"
-                    ? "Error"
-                    : "Running"}
-              </Pill>
-            </div>
-            <div className="mono truncate" style={{ color: "var(--muted)" }}>
-              {restore.target_path}
-            </div>
-            <ProgressBar done={restore.bytes_done} total={restore.bytes_total} />
-            <div className="row wrap num" style={{ gap: 20, fontSize: 12.5, color: "var(--muted)" }}>
-              <span>
-                {formatBytes(restore.bytes_done)} of {formatBytes(restore.bytes_total)}
-              </span>
-              <span>{formatSpeed(restore.speed_bps)}</span>
-              <span>{formatDuration(restore.eta_seconds)} left</span>
-            </div>
-            {restore.error ? <Alert>{restore.error}</Alert> : null}
-          </div>
-        ))}
-      </div>
-    </Card>
-  );
 }
 
 export default function Files() {
