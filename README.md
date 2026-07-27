@@ -182,7 +182,9 @@ docker compose -f docker-compose.hub.yml up -d
 
 The images are `enrico1203/tgbackup-backend` and `enrico1203/tgbackup-frontend` on Docker Hub,
 `linux/amd64` and `linux/arm64`, so an x86 server, a NAS and a Raspberry all pull the same tag.
-`latest` follows the releases; `TGBACKUP_TAG=v1.2.0` in `.env` pins the installation to one version.
+`latest` follows the releases; `TGBACKUP_TAG=0.1.0` in `.env` pins the installation to one version,
+and `TGBACKUP_TAG=0.1` keeps it on the fixes of that minor. The image tags carry no `v`, unlike the
+git tag they are built from.
 
 The Cloudflare tunnel is optional here and stays down unless it is asked for, since without it the
 interface is still on `127.0.0.1:8081`:
