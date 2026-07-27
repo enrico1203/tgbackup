@@ -326,7 +326,9 @@ The Cloudflare tunnel is behind a `tunnel` profile there, because an empty token
 leave a container restarting forever on an installation that does not want a tunnel.
 The credentials are two repository secrets, `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`, the second
 a Docker Hub access token with Read and Write: an account created through GitHub has no password to
-use in its place.
+use in its place. A last job rewrites the page of each repository on Docker Hub from the README, in
+curl and jq rather than a third-party action, because that page is the only documentation somebody
+who never opens GitHub will read and kept by hand it would drift.
 
 **AGPL-3.0, chosen 2026-07-26**. This is a self-hosted network application, which is the case the
 Affero clause exists for: with plain GPL somebody could run a modified version as a hosted service

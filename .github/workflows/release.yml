@@ -123,3 +123,43 @@ jobs:
         run: |
           docker buildx imagetools inspect \
             ${{ env.NAMESPACE }}/tgbackup-${{ matrix.image }}:${{ steps.meta.outputs.version }}
+
+  # The page on Docker Hub is the only documentation somebody who never opens GitHub
+  # will read, and an empty one next to a pull command is worth nothing. It is rewritten
+  # from the README at every publication rather than kept by hand, where it would drift.
+  description:
+    name: Docker Hub page for ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    needs: merge
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: backend
+            summary: API, scheduler and transfers of tgbackup, folders and rclone remotes into Telegram
+          - image: frontend
+            summary: Web interface of tgbackup, the built React application served by nginx
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Rewrite the page from the README
+        env:
+          # Read by jq out of the environment and never passed as an argument, which on
+          # a shared runner would put the token in the process list.
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          SUMMARY: ${{ matrix.summary }}
+          REPOSITORY: ${{ env.NAMESPACE }}/tgbackup-${{ matrix.image }}
+        run: |
+          jwt=$(jq -n '{username: env.DOCKERHUB_USERNAME, password: env.DOCKERHUB_TOKEN}' \
+            | curl -sf -H 'Content-Type: application/json' -d @- \
+                https://hub.docker.com/v2/users/login/ \
+            | jq -r .token)
+
+          jq -n --rawfile readme README.md \
+              '{description: env.SUMMARY, full_description: $readme}' \
+            | curl -sf -X PATCH -o /dev/null \
+                -H 'Content-Type: application/json' -H "Authorization: JWT $jwt" \
+                -d @- "https://hub.docker.com/v2/repositories/${REPOSITORY}/"
+
+          echo "Page of ${REPOSITORY} rewritten from the README"
