@@ -1,0 +1,58 @@
+# Runs the published images, with no clone and nothing to build. Take this file and
+# .env.example, rename the second one to .env, fill it in, then:
+#
+#   docker compose -f docker-compose.hub.yml up -d
+#
+# docker-compose.yml is the other way round, it builds from the sources in this
+# repository. The two are not meant to be used together.
+
+services:
+  backend:
+    image: enrico1203/tgbackup-backend:${TGBACKUP_TAG:-latest}
+    pull_policy: always
+    restart: unless-stopped
+    environment:
+      APP_SECRET: ${APP_SECRET}
+      TZ: ${TZ:-Europe/Rome}
+      DATA_DIR: /data
+    volumes:
+      # SQLite database, rclone configuration and files rebuilt by restore
+      - ./data:/data
+      # Folders to back up to Telegram, always read-only. The path inside the container
+      # is the one to type into the job, so keeping the two sides identical helps.
+      - /mnt/documents:/mnt/documents:ro
+      # Destination of a download job, the only volume that is written. Without :ro, and
+      # never one of the folders above.
+      # - /mnt/restored:/mnt/restored
+    networks:
+      - tgbackup
+
+  frontend:
+    image: enrico1203/tgbackup-frontend:${TGBACKUP_TAG:-latest}
+    pull_policy: always
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      # Only the machine itself. To reach it from the local network, drop the 127.0.0.1
+      # and put something in front of it that terminates TLS.
+      - "127.0.0.1:${FRONTEND_PORT:-8081}:80"
+    networks:
+      - tgbackup
+
+  # Optional, and off unless asked for: docker compose -f docker-compose.hub.yml
+  # --profile tunnel up -d. Without the profile the port above is the only way in, and
+  # an empty CLOUDFLARE_TUNNEL_TOKEN cannot leave a container restarting forever.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles: [tunnel]
+    restart: unless-stopped
+    depends_on:
+      - frontend
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    networks:
+      - tgbackup
+
+networks:
+  tgbackup:
+    driver: bridge

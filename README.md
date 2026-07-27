@@ -164,7 +164,38 @@ index that job is writing. A check that only reports is always allowed.
 
 ## Setup
 
+Two ways in. The published images ask for nothing but Docker and two files; building from the
+sources is for changing the code.
+
+### From the published images
+
 ```bash
+curl -LO https://raw.githubusercontent.com/enrico1203/tgbackup/main/docker-compose.hub.yml
+curl -L -o .env https://raw.githubusercontent.com/enrico1203/tgbackup/main/.env.example
+```
+
+Fill in `.env` as described below, list the folders to back up in `docker-compose.hub.yml`, then:
+
+```bash
+docker compose -f docker-compose.hub.yml up -d
+```
+
+The images are `enrico1203/tgbackup-backend` and `enrico1203/tgbackup-frontend` on Docker Hub,
+`linux/amd64` and `linux/arm64`, so an x86 server, a NAS and a Raspberry all pull the same tag.
+`latest` follows the releases; `TGBACKUP_TAG=v1.2.0` in `.env` pins the installation to one version.
+
+The Cloudflare tunnel is optional here and stays down unless it is asked for, since without it the
+interface is still on `127.0.0.1:8081`:
+
+```bash
+docker compose -f docker-compose.hub.yml --profile tunnel up -d
+```
+
+### From the sources
+
+```bash
+git clone https://github.com/enrico1203/tgbackup.git
+cd tgbackup
 cp .env.example .env
 ```
 
@@ -198,6 +229,15 @@ The interface answers on `http://127.0.0.1:8081` and on the Cloudflare tunnel ho
 Initial credentials `admin` / `admin`, password change is mandatory on first sign in.
 
 ## Updating
+
+From the published images:
+
+```bash
+docker compose -f docker-compose.hub.yml pull
+docker compose -f docker-compose.hub.yml up -d
+```
+
+From the sources:
 
 ```bash
 git pull
@@ -278,6 +318,11 @@ available. Exceptions live in `.trivyignore`, each with a reason and an expiry d
 
 There is no test suite. Nothing here asserts what a job does with a file, which would need a real
 Telegram account and a real remote.
+
+`Publish images` is not run by a push. It runs on a `v*` tag, or from the Actions tab, and it builds
+each architecture on a runner of that architecture, `linux/amd64` and `linux/arm64`, pushing both
+under one manifest per image. A tag `v1.2.3` publishes `1.2.3`, `1.2` and `latest`; the button
+publishes `latest` alone.
 
 ## Technical documentation
 

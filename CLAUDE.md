@@ -64,7 +64,7 @@ frontend/src/
   components/ Shell ui JobActivity DownloadActivity RemoteBrowser
   lib/       api auth progress types format theme
 .github/
-  workflows/ ci.yml trivy.yml
+  workflows/ ci.yml trivy.yml release.yml
   scripts/   check_migrations.py
 ruff.toml .trivyignore
 ```
@@ -310,6 +310,23 @@ one does: the job has no source yet, and a run against the wrong folder would se
 removed and empty the channel message by message. The rebuild also skips paths already indexed
 anywhere on that channel, not only in the target job, so the same messages never get two entries and
 running it twice writes nothing the second time.
+
+**The images are published on Docker Hub, multi-arch, on a tag** (since 2026-07-27).
+`release.yml` builds `enrico1203/tgbackup-backend` and `enrico1203/tgbackup-frontend` for
+`linux/amd64` and `linux/arm64`. Each architecture is built on a runner of its own architecture,
+`ubuntu-latest` and `ubuntu-24.04-arm`, and never under QEMU: cryptg is compiled with Rust and
+emulated that build takes the better part of an hour. The two halves are pushed by digest with no
+tag, then a merge job assembles one manifest list and puts the tags on it, which is the only way two
+runners can produce a single multi-arch tag. The trigger is a `v*` tag or the button, never a push:
+`latest` is what a user pulls and it must not move on every commit. `TARGETARCH` in the backend
+Dockerfile picks the matching rclone archive, whose names happen to be amd64 and arm64 as well.
+`docker-compose.hub.yml` pulls those images and is what somebody who never clones the repository
+uses; `docker-compose.yml` still builds from the sources and the two are not meant to be mixed.
+The Cloudflare tunnel is behind a `tunnel` profile there, because an empty token would otherwise
+leave a container restarting forever on an installation that does not want a tunnel.
+The credentials are two repository secrets, `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`, the second
+a Docker Hub access token with Read and Write: an account created through GitHub has no password to
+use in its place.
 
 **AGPL-3.0, chosen 2026-07-26**. This is a self-hosted network application, which is the case the
 Affero clause exists for: with plain GPL somebody could run a modified version as a hosted service

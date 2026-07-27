@@ -14,12 +14,16 @@ RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
 # which lags a few versions behind.
 FROM alpine:3.24 AS rclone
 
+# BuildKit fills TARGETARCH in with the architecture being built, and rclone names its
+# archives the same way, amd64 and arm64: the published image is one manifest holding
+# both. The default is only there for a builder old enough not to set it.
+ARG TARGETARCH=amd64
 ARG RCLONE_VERSION=1.74.4
 RUN apk add --no-cache curl unzip \
     && curl -fsSL -o /tmp/rclone.zip \
-        "https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-amd64.zip" \
+        "https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-${TARGETARCH}.zip" \
     && unzip -q /tmp/rclone.zip -d /tmp \
-    && mv "/tmp/rclone-v${RCLONE_VERSION}-linux-amd64/rclone" /usr/local/bin/rclone \
+    && mv "/tmp/rclone-v${RCLONE_VERSION}-linux-${TARGETARCH}/rclone" /usr/local/bin/rclone \
     && chmod 755 /usr/local/bin/rclone
 
 
