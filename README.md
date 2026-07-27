@@ -17,6 +17,8 @@ a download job pours a whole channel back into a folder or an rclone remote.
 - **Parallel jobs**: several folders, channels and Telegram accounts at once. The same job never runs
   twice concurrently, even when a run takes days.
 - **Live progress**: upload speed, remaining files and estimated time over a WebSocket.
+- **File explorer**: a channel browsed as a folder tree, read from the index, with any file
+  downloaded straight to the browser.
 - **Restore**: downloads all the parts and rebuilds the original file.
 - **Download jobs**: a whole channel back into a folder or an rclone remote, on a schedule, skipping
   what is already there and deleting nothing.
@@ -66,6 +68,32 @@ written, when the job is saved rather than in the middle of the night.
 
 On a remote nothing is staged on disk either: the parts arrive from Telegram already in order and go
 straight into `rclone rcat`.
+
+## File explorer
+
+Pick a channel and browse it as a folder tree: enter a folder, walk back up, follow the path in the
+bar at the top, and use the back and forward arrows the way any file manager works. It reads well on
+a phone, which is the point of it: getting one file back should not need a computer.
+
+What is browsed is the index in the database, not Telegram. Opening a folder is one query and no API
+call, so a channel with 200,000 files opens as fast as an empty one, and the size next to a folder
+counts everything below it, not just what sits directly inside. Only files that reached Telegram
+appear: something still waiting to be uploaded is not there to be opened.
+
+**A file split into parts is one file.** The split belongs to the transport, and the explorer shows
+what was backed up. Downloading one is a single click: the parts are fetched in parallel, joined in
+order and streamed to the browser as they arrive, so nothing is written to the server first and a
+40 GB file needs no 40 GB of free space anywhere. This is the difference from Restore on the Files
+page, which rebuilds a file into `data/restore/` inside the container and leaves it there.
+
+Two things follow from streaming. There is no resume: a download interrupted halfway starts again
+from the beginning, which is the price of never staging the file. And a browser download spends from
+the same budget of 20 connections per data center that the jobs share, so it queues behind a running
+upload on that account exactly as a second job would.
+
+The link the browser follows carries a pass valid for that one file and five minutes, not your
+session: a URL ends up in the browser history and in the nginx log, and a session token has no
+business being in either.
 
 ## Rclone remotes
 
@@ -266,11 +294,13 @@ is the last thing in `docker compose logs backend`.
    often to run, the scan rate and what to leave out. The job starts on its own, or with Run now.
 5. **Download jobs**: pick the channel to bring back, the destination (writable folder or rclone
    remote) and how often to run. Nothing is ever deleted at the destination.
-6. **Files and restore**: everything tracked, grouped by channel, with parts and message ids linking
+6. **File explorer**: a channel browsed as a folder tree, with any file downloaded straight to the
+   browser, phone included.
+7. **Files and restore**: everything tracked, grouped by channel, with parts and message ids linking
    straight to Telegram. Restore rebuilds a single file into `data/restore/`, while a download job
    brings back a whole channel.
-7. **Export**: moves a channel to another installation.
-8. **Maintenance**: checks a channel against the index, or rebuilds the index by reading it.
+8. **Export**: moves a channel to another installation.
+9. **Maintenance**: checks a channel against the index, or rebuilds the index by reading it.
 
 ## Moving a channel to another machine
 

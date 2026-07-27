@@ -172,6 +172,43 @@ export interface FilePage {
   total: number;
 }
 
+export interface ExplorerFolder {
+  name: string;
+  path: string;
+  files: number;
+  bytes: number;
+}
+
+export interface ExplorerFile {
+  id: number;
+  name: string;
+  path: string;
+  size: number;
+  parts: number;
+  uploaded_at: string | null;
+  job_id: number;
+}
+
+export interface ExplorerListing {
+  channel_id: number;
+  channel_title: string;
+  path: string;
+  folders: ExplorerFolder[];
+  files: ExplorerFile[];
+  files_total: number;
+  bytes_total: number;
+  entries_total: number;
+  offset: number;
+  limit: number;
+}
+
+export interface DownloadTicket {
+  url: string;
+  name: string;
+  size: number;
+  expires_in: number;
+}
+
 export interface RcloneStatus {
   configured: boolean;
   version: string;

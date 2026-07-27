@@ -1,12 +1,14 @@
 import { Fragment, useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
-import { Download, ExternalLink, FileStack, Hash, Search } from "lucide-react";
+import { Download, ExternalLink, FileStack, Search } from "lucide-react";
 
 import { api } from "../lib/api";
-import { formatBytes, formatDateTime, formatDuration, formatSpeed, percent } from "../lib/format";
+import { groupByChannel } from "../lib/channels";
+import { formatBytes, formatDateTime, formatDuration, formatSpeed } from "../lib/format";
 import { useProgress } from "../lib/progress";
 import type { FileEntry, FilePage, Job, RestoreOut } from "../lib/types";
+import ChannelPicker from "../components/ChannelPicker";
 import {
   Alert,
   Card,
@@ -32,51 +34,6 @@ const STATE_LABELS: Record<string, { text: string; tone: "ok" | "warn" | "bad" |
  *  -100 prefix. It is the same id kept in tg_id. */
 function messageLink(channelTgId: number, messageId: number): string {
   return `https://t.me/c/${channelTgId}/${messageId}`;
-}
-
-interface ChannelGroup {
-  channelId: number;
-  channelTgId: number;
-  title: string;
-  accounts: string[];
-  jobNames: string[];
-  filesTotal: number;
-  filesUploaded: number;
-  filesError: number;
-  bytesTotal: number;
-  bytesUploaded: number;
-}
-
-/** Files belong to a job, and every job writes to a channel. To show them per channel, the
- *  jobs sharing the same destination are grouped together. */
-function groupByChannel(jobs: Job[]): ChannelGroup[] {
-  const groups = new Map<number, ChannelGroup>();
-  for (const job of jobs) {
-    let group = groups.get(job.channel_id);
-    if (!group) {
-      group = {
-        channelId: job.channel_id,
-        channelTgId: job.channel_tg_id,
-        title: job.channel_title,
-        accounts: [],
-        jobNames: [],
-        filesTotal: 0,
-        filesUploaded: 0,
-        filesError: 0,
-        bytesTotal: 0,
-        bytesUploaded: 0,
-      };
-      groups.set(job.channel_id, group);
-    }
-    if (!group.accounts.includes(job.account_label)) group.accounts.push(job.account_label);
-    group.jobNames.push(job.name);
-    group.filesTotal += job.stats.files_total;
-    group.filesUploaded += job.stats.files_uploaded;
-    group.filesError += job.stats.files_error;
-    group.bytesTotal += job.stats.bytes_total;
-    group.bytesUploaded += job.stats.bytes_uploaded;
-  }
-  return Array.from(groups.values()).sort((a, b) => a.title.localeCompare(b.title));
 }
 
 function RestorePanel() {
@@ -119,54 +76,6 @@ function RestorePanel() {
         ))}
       </div>
     </Card>
-  );
-}
-
-function ChannelPicker({
-  groups,
-  selected,
-  onSelect,
-}: {
-  groups: ChannelGroup[];
-  selected: number | null;
-  onSelect: (channelId: number) => void;
-}) {
-  return (
-    <div className="channel-grid">
-      {groups.map((group) => {
-        const done = percent(group.filesUploaded, group.filesTotal);
-        return (
-          <button
-            key={group.channelId}
-            type="button"
-            className={group.channelId === selected ? "channel-card active" : "channel-card"}
-            onClick={() => onSelect(group.channelId)}
-          >
-            <div className="row" style={{ gap: 9 }}>
-              <Hash size={15} style={{ flexShrink: 0, opacity: 0.65 }} />
-              <span className="channel-title">{group.title}</span>
-              {group.filesError > 0 ? (
-                <span style={{ marginLeft: "auto" }}>
-                  <Pill tone="bad">{group.filesError}</Pill>
-                </span>
-              ) : null}
-            </div>
-
-            <div className="channel-meta num">
-              {group.filesUploaded.toLocaleString("en-US")} of{" "}
-              {group.filesTotal.toLocaleString("en-US")} files, {formatBytes(group.bytesUploaded)}
-            </div>
-
-            <ProgressBar done={group.filesUploaded} total={group.filesTotal} />
-
-            <div className="channel-meta">
-              {group.jobNames.join(", ")} on {group.accounts.join(", ")}
-              <span className="num"> — {done.toFixed(done >= 99.5 ? 1 : 0)} per cent</span>
-            </div>
-          </button>
-        );
-      })}
-    </div>
   );
 }
 

@@ -292,6 +292,56 @@ class FilePage(BaseModel):
     total: int
 
 
+# File explorer
+
+
+class ExplorerFolder(BaseModel):
+    name: str
+    # Path to open, already relative to the root of the channel.
+    path: str
+    # Everything under it, not only what sits directly inside.
+    files: int
+    bytes: int
+
+
+class ExplorerFile(BaseModel):
+    id: int
+    name: str
+    path: str
+    size: int
+    # A file split across several messages is one file here. This is how many messages
+    # hold it, kept because it explains why a large download takes a while to start.
+    parts: int
+    uploaded_at: datetime | None
+    job_id: int
+
+
+class ExplorerListing(BaseModel):
+    channel_id: int
+    channel_title: str
+    path: str
+    folders: list[ExplorerFolder]
+    files: list[ExplorerFile]
+    # Files and bytes of this folder and everything below it.
+    files_total: int
+    bytes_total: int
+    # Folders plus files directly at this level, before the page is cut.
+    entries_total: int
+    offset: int
+    limit: int
+
+
+class DownloadTicketIn(BaseModel):
+    file_id: int
+
+
+class DownloadTicketOut(BaseModel):
+    url: str
+    name: str
+    size: int
+    expires_in: int
+
+
 # Restore
 
 

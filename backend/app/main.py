@@ -10,6 +10,7 @@ from .api import (
     auth,
     dashboard,
     downloads,
+    explorer,
     export,
     files,
     jobs,
@@ -78,6 +79,7 @@ app.include_router(accounts.router)
 app.include_router(jobs.router)
 app.include_router(downloads.router)
 app.include_router(files.router)
+app.include_router(explorer.router)
 app.include_router(dashboard.router)
 app.include_router(export.router)
 app.include_router(maintenance.router)

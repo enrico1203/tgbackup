@@ -52,17 +52,17 @@ backend/
     transfer.py (export and import of a channel index)
     maintenance.py (check of a channel, rebuild of the index from it)
     notify.py (report at the end of a run, to Saved Messages)
-    api/       auth accounts jobs downloads files dashboard export maintenance
+    api/       auth accounts jobs downloads files explorer dashboard export maintenance
                preferences rclone ws
     telegram/  manager.py (client registry, peers) fast_transfer.py (parallel upload/download)
     rclone/    client.py (streaming lsjson, ranged cat, rcat, touch, config on disk)
     sync/      source.py destination.py scanner.py filters.py runner.py download.py
                scheduler.py restore.py progress.py
 frontend/src/
-  pages/     Login ChangePassword Dashboard Jobs Downloads Accounts Files Runs Export
-             Maintenance Settings
-  components/ Shell ui JobActivity DownloadActivity RemoteBrowser
-  lib/       api auth progress types format theme
+  pages/     Login ChangePassword Dashboard Jobs Downloads Accounts Explorer Files Runs
+             Export Maintenance Settings
+  components/ Shell ui JobActivity DownloadActivity RemoteBrowser ChannelPicker
+  lib/       api auth progress types format theme channels
 .github/
   workflows/ ci.yml trivy.yml release.yml
   scripts/   check_migrations.py
@@ -183,6 +183,20 @@ check that only reports is always allowed.
 date. Entries written by a rebuild get `MTIME_UNKNOWN` (-1) and the first scan of the job adopts the
 date of the source when the size matches, instead of taking every file for modified and re-uploading
 the whole channel. Same compromise a download job makes: size is what the channel actually knows.
+
+**File explorer** (`api/explorer.py`, page `Explorer.tsx`): the index browsed as a folder tree. The
+listing reads the database and never Telegram, so opening a folder costs one query whatever the size
+of the channel. The rows are selected on `prefix <= rel_path < prefix + "\U0010ffff"` and not with
+`LIKE 'prefix%'`, which returns the same rows but cannot be answered from the index, because LIKE
+ignores the case of ASCII letters and the index does not. Folders are assembled in Python from the
+first segment after the prefix, with the count and the bytes of the whole subtree; only entries in
+`uploaded` are shown, since anything else is not in the channel to be opened. A file split into parts
+is one row: the split belongs to the transport. The download is a `StreamingResponse` fed by
+`stream_document`, the same parallel-in, ordered-out mechanism a download job uses for `rclone rcat`,
+so nothing is staged on disk and a 40 GB file needs no 40 GB anywhere. It holds the account transfer
+semaphore for its duration, acquired inside the generator because that is the only place whose exit
+is guaranteed when the browser goes away halfway. `nginx.conf` turns `proxy_buffering` off on
+`/api/explorer/download/`, or nginx would try to hold the whole file before the browser saw a byte.
 
 **Notifications** (`notify.py`): a report at the end of a run, sent to the Saved Messages of an
 account. The client is already connected and every account has a chat with itself, so there is no
@@ -310,6 +324,22 @@ one does: the job has no source yet, and a run against the wrong folder would se
 removed and empty the channel message by message. The rebuild also skips paths already indexed
 anywhere on that channel, not only in the target job, so the same messages never get two entries and
 running it twice writes nothing the second time.
+
+**A browser download travels on a ticket, not on the session token** (since 2026-07-27). A download
+is a plain navigation, where no Authorization header can be set, so the credential has to be in the
+URL, where the browser history and the nginx log keep it. `create_download_ticket` mints a JWT for
+one file and five minutes, and `decode_token` now refuses any token carrying a `scope`, so a ticket
+picked out of a log cannot be replayed as a session. The alternative, fetching the body with the
+header set and handing it over as a blob, would hold the whole file in the memory of the tab, which
+for the files this application moves is not an alternative at all.
+
+**The explorer download has no Range support** (since 2026-07-27). An interrupted download starts
+again from the beginning. Range would mean either staging the file, which the whole design avoids, or
+mapping an arbitrary byte range onto the parts and restarting the parallel senders at an offset
+inside one of them, for a case that a self-hosted explorer meets rarely. The account is connected
+before the response starts, though: once a `StreamingResponse` has sent its 200 and its length there
+is no way to report an error, so a disconnected account is a 409 at ticket time and the interface
+shows the reason.
 
 **The images are published on Docker Hub, multi-arch, on a tag** (since 2026-07-27).
 `release.yml` builds `enrico1203/tgbackup-backend` and `enrico1203/tgbackup-frontend` for

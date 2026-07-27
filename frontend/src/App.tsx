@@ -7,6 +7,7 @@ import Accounts from "./pages/Accounts";
 import ChangePassword from "./pages/ChangePassword";
 import Dashboard from "./pages/Dashboard";
 import Downloads from "./pages/Downloads";
+import Explorer from "./pages/Explorer";
 import Export from "./pages/Export";
 import Files from "./pages/Files";
 import Jobs from "./pages/Jobs";
@@ -42,6 +43,7 @@ export default function App() {
             <Route path="jobs" element={<Jobs />} />
             <Route path="downloads" element={<Downloads />} />
             <Route path="accounts" element={<Accounts />} />
+            <Route path="explorer" element={<Explorer />} />
             <Route path="files" element={<Files />} />
             <Route path="runs" element={<Runs />} />
             <Route path="export" element={<Export />} />
