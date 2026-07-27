@@ -33,6 +33,23 @@ run in a throwaway container: `docker run --rm ... tgbackup-backend python ...` 
 **Careful with `docker compose up -d <service>`**: because of `depends_on` it also restarts the
 backend and interrupts running jobs. Use `--no-deps`.
 
+**Every change ends the same way, in this order.** A change that works on this machine and nowhere
+else is half done: the images on Docker Hub and the release are what other installations see.
+
+```
+docker compose up -d --no-deps --build backend frontend   # deploy, then read the log
+git push origin main                                      # after committing
+git tag -a vX.Y.Z -m "tgbackup X.Y.Z ..." && git push origin vX.Y.Z
+gh release create vX.Y.Z --verify-tag --title "tgbackup X.Y.Z" --notes-file <notes>
+```
+
+The tag is what publishes: `release.yml` builds amd64 and arm64 and pushes `X.Y.Z`, `X.Y` and
+`latest`, then rewrites the Docker Hub pages from the README. A new feature moves the minor, a fix
+the patch. Check the run is green before writing the release, and say in the notes what changed and
+what it means for somebody upgrading, not the list of commits. If jobs are running, say so before
+deploying and let the user decide: a run interrupted by the restart resumes on start without losing
+an interval, but it starts again from the scan.
+
 ## Stack
 
 Backend: Python 3.14 Alpine, FastAPI, SQLAlchemy 2.0 async on SQLite, Alembic 1.18, Telethon 1.44,
