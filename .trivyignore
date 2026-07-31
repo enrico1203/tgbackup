@@ -21,3 +21,21 @@
 # Recheck when a new rclone is released: if it links grpc 1.82.1 or later, bump
 # RCLONE_VERSION in backend/Dockerfile and delete these lines.
 GHSA-hrxh-6v49-42gf exp:2026-10-31
+
+# golang.org/x/text: norm.Iter can loop for ever on input holding invalid UTF-8 bytes,
+# in v0.38.0 as statically linked into the official rclone binary. Fixed in x/text
+# 0.39.0, and rclone master already carries 0.40.0, but 1.74.4 of 2026-07-08 is still
+# the latest release: as with grpc above, there is no version of rclone to move to.
+#
+# Unlike the grpc entry this one is not unreachable, and it is not claimed to be. rclone
+# normalises the names it reads, so a file whose name holds invalid UTF-8 on a remote
+# could in principle reach the loop. What it can cost is bounded: rclone runs here only
+# as one-shot subprocesses, each under the timeouts in config.py, so the worst outcome
+# is a scan that hangs until its ceiling and a job that fails. No memory is corrupted,
+# nothing is executed and nothing is disclosed. The names come from the user's own
+# remotes in a self-hosted application, so there is no third party to feed them either.
+#
+# Recheck at the same time as the grpc entry: master has both fixes, so the next rclone
+# release should clear the two of them together.
+CVE-2026-56852 exp:2026-10-31
+GHSA-jpjm-c3r5-q96r exp:2026-10-31
