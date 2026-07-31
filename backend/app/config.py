@@ -23,6 +23,16 @@ class Settings(BaseSettings):
     scheduler_tick_seconds: int = 10
     progress_interval_seconds: float = 1.0
 
+    # A single Telegram call that never comes back. Telethon returns a bare future for
+    # every request and never times it out, so a part whose answer the server drops
+    # would be awaited for ever, with the job holding its account slot and moving no
+    # bytes. The value has to clear what Telethon may legitimately spend inside one
+    # call: it retries `request_retries` times, 5 by default, sleeping up to
+    # `flood_sleep_threshold`, 60s by default, on each flood wait, so about 300s of
+    # honest waiting. Ten minutes leaves room above that and is still far below any
+    # speed a 512KB part could arrive at.
+    telegram_request_timeout: float = 600.0
+
     # rclone timeouts. These are safety nets against a remote that never answers, not
     # work limits: listing and preview stop on their own once they have what they need,
     # while a job scan can legitimately take a long time on huge remotes.

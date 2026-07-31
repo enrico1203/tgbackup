@@ -259,6 +259,17 @@ account's own dialog list when it is reachable, and the exported one is the fall
 mismatch and the failure to verify are reported as warnings on the import result rather than
 blocking it: the index is worth having even when the channel cannot be checked right then.
 
+**No Telegram call may hang for ever** (`telegram_request_timeout`, 10 min). Telethon returns a bare
+future for every request, resolved by the receive loop when the answer arrives and by nothing at all
+when it never does. A connection dropped at the wrong moment leaves the call pending: the reader
+stops being read, the source blocks with a full buffer, and the job holds its account slot at zero
+bytes with no error to show for it. `call_with_timeout` wraps every request that carries a transfer,
+the upload part, the download part and the message that publishes them, turning the silence into an
+exception `_upload_with_retry` already knows how to handle by rebuilding the reader and starting the
+slice again. The value has to clear what Telethon may legitimately spend inside one call: it retries
+`request_retries` times, 5 by default, sleeping up to `flood_sleep_threshold`, 60 s by default, on
+each flood wait, so around 300 s of honest waiting.
+
 **Secrets**: `api_hash`, Telegram sessions and `rclone.conf` are encrypted with Fernet derived from
 `APP_SECRET`. Changing `APP_SECRET` makes them unreadable. The `rclone.conf` is returned in clear to
 the browser only from `GET /api/rclone/content`, that is only when Edit is pressed.

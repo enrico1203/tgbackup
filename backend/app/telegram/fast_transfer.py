@@ -35,6 +35,8 @@ from telethon.tl.functions.upload import (
 )
 from telethon.tl.types import Document, InputDocumentFileLocation, InputFile, InputFileBig
 
+from ..config import settings
+
 log = logging.getLogger(__name__)
 
 MAX_CONNECTIONS = 20
@@ -55,6 +57,26 @@ def connection_count(size: int, maximum: int = MAX_CONNECTIONS) -> int:
     if size <= 0:
         return 1
     return max(1, min(maximum, math.ceil(size / (5 * 1024 * 1024))))
+
+
+async def call_with_timeout(awaitable, what: str):
+    """Awaits a Telegram call, giving up if the answer never arrives.
+
+    `MTProtoSender.send` hands back a future that is resolved by the receive loop when
+    the response comes in, and nothing anywhere resolves it if the response never does.
+    A connection dropped at the wrong moment, which is what a flood wait storm produces,
+    therefore leaves the call pending for ever: the reader stops being read, the source
+    blocks with a full buffer, the job keeps its account slot and the transfer sits at
+    zero without a single error to show for it. Turning that into an exception is what
+    lets the retry above take over, rebuild the reader and start the slice again.
+    """
+    try:
+        return await asyncio.wait_for(awaitable, settings.telegram_request_timeout)
+    except TimeoutError:
+        raise TimeoutError(
+            f"Telegram did not answer for {what} within "
+            f"{settings.telegram_request_timeout:.0f}s"
+        ) from None
 
 
 class _UploadSender:
@@ -88,7 +110,10 @@ class _UploadSender:
 
     async def _send(self, data: bytes) -> None:
         self._request.bytes = data
-        await self._client._call(self._sender, self._request)
+        await call_with_timeout(
+            self._client._call(self._sender, self._request),
+            f"part {self._request.file_part}",
+        )
         self._request.file_part += self._stride
         if self._on_part is not None:
             self._on_part(len(data))
@@ -97,6 +122,19 @@ class _UploadSender:
         if self._pending is not None:
             await self._pending
             self._pending = None
+
+    async def abort(self) -> None:
+        """Gives up the part still in flight, when the slice is being abandoned.
+
+        The part travels in a task of its own, so it outlives the loop that queued it:
+        without this its failure would surface later as an exception nobody retrieved,
+        once per sender and once per attempt.
+        """
+        if self._pending is None:
+            return
+        self._pending.cancel()
+        await asyncio.gather(self._pending, return_exceptions=True)
+        self._pending = None
 
     async def disconnect(self) -> None:
         await self._sender.disconnect()
@@ -123,7 +161,9 @@ class _DownloadSender:
         if self._remaining <= 0:
             return None
         offset = self._request.offset
-        result = await self._client._call(self._sender, self._request)
+        result = await call_with_timeout(
+            self._client._call(self._sender, self._request), f"the part at offset {offset}"
+        )
         self._remaining -= 1
         self._request.offset += self._stride
         return offset, result.bytes
@@ -267,6 +307,12 @@ async def upload_slice(
             for sender in senders:
                 await sender.drain()
     finally:
+        # When one sender fails the others are still holding a part: they are dropped
+        # before the connections go, or their tasks would outlive the upload. On the
+        # way out of a slice that worked this finds nothing to do, drain emptied them.
+        await asyncio.gather(
+            *(sender.abort() for sender in senders), return_exceptions=True
+        )
         await asyncio.gather(
             *(sender.disconnect() for sender in senders), return_exceptions=True
         )

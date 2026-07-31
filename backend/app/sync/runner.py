@@ -29,7 +29,7 @@ from ..models import (
     TelegramAccount,
     utcnow,
 )
-from ..telegram.fast_transfer import MAX_CONNECTIONS, upload_slice
+from ..telegram.fast_transfer import MAX_CONNECTIONS, call_with_timeout, upload_slice
 from ..telegram.manager import manager
 from .progress import hub
 from .source import build_source
@@ -451,14 +451,21 @@ class JobRunner:
             )
 
             caption = build_caption(rel_path, name, index, len(slices))
-            message = await client.send_file(
-                entity,
-                handle,
-                caption=caption,
-                # Photos and videos must stay documents: no recompression, no quality
-                # loss, bytes identical to the original.
-                force_document=True,
-                attributes=[DocumentAttributeFilename(file_name)],
+            # The bytes are already on the server, this only posts the message, so the
+            # timeout is generous by a wide margin. It is here because it is the last
+            # call of the part that could hang for ever, and a part that hangs here
+            # stops the job just as surely as one that hangs while uploading.
+            message = await call_with_timeout(
+                client.send_file(
+                    entity,
+                    handle,
+                    caption=caption,
+                    # Photos and videos must stay documents: no recompression, no quality
+                    # loss, bytes identical to the original.
+                    force_document=True,
+                    attributes=[DocumentAttributeFilename(file_name)],
+                ),
+                f"the message carrying {file_name}",
             )
 
             async with SessionLocal() as session:
