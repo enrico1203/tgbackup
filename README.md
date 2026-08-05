@@ -5,6 +5,57 @@ Uploads new files, deletes from the channel the ones that disappeared from the s
 the modified ones, and can reassemble files that were split into parts. It also goes the other way:
 a download job pours a whole channel back into a folder or an rclone remote.
 
+## Start here
+
+Nothing to clone and nothing to build. The images are published for `linux/amd64` and
+`linux/arm64`, so an x86 server, a NAS and a Raspberry all pull the same tag. Save this as
+`docker-compose.yml`:
+
+```yaml
+services:
+  backend:
+    image: enrico1203/tgbackup-backend:latest
+    restart: unless-stopped
+    environment:
+      APP_SECRET: ${APP_SECRET}
+      TZ: ${TZ:-Europe/Rome}
+      DATA_DIR: /data
+    volumes:
+      # Database, rclone configuration and the files rebuilt by a restore
+      - ./data:/data
+      # The folders to back up, always read-only. The path inside the container is the
+      # one to type into the job, so keeping the two sides identical helps.
+      - /mnt/documents:/mnt/documents:ro
+      # Destination of a download job: the only volume that is written, so without :ro,
+      # and never one of the folders above.
+      # - /mnt/restored:/mnt/restored
+
+  frontend:
+    image: enrico1203/tgbackup-frontend:latest
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      # Only the machine itself. To reach it from the local network, drop the 127.0.0.1
+      # and put something that terminates TLS in front of it.
+      - "127.0.0.1:8081:80"
+```
+
+Then, in the same folder:
+
+```bash
+echo "APP_SECRET=$(openssl rand -hex 32)" > .env
+docker compose up -d
+```
+
+The interface answers on `http://127.0.0.1:8081`, with `admin` / `admin` and a mandatory
+password change on the first sign in. Keep `APP_SECRET`: it encrypts the Telegram sessions and
+the rclone configuration in the database, and changing it means linking the accounts again.
+
+That is the whole installation. The Setup section further down covers the same file with the
+Cloudflare tunnel and with a version pinned instead of `latest`, and building from the sources
+for changing the code.
+
 ## What it does
 
 - **Low impact scanning**: a file's identity is `(path, size, mtime)`, read with a single `stat`
@@ -233,6 +284,9 @@ sources is for changing the code.
 
 ### From the published images
 
+The compose file at the top of this page is enough to start. The one in the repository is the
+same with the tunnel and the version pinning already written out:
+
 ```bash
 curl -LO https://raw.githubusercontent.com/enrico1203/tgbackup/main/docker-compose.hub.yml
 curl -L -o .env https://raw.githubusercontent.com/enrico1203/tgbackup/main/.env.example
@@ -244,8 +298,7 @@ Fill in `.env` as described below, list the folders to back up in `docker-compos
 docker compose -f docker-compose.hub.yml up -d
 ```
 
-The images are `enrico1203/tgbackup-backend` and `enrico1203/tgbackup-frontend` on Docker Hub,
-`linux/amd64` and `linux/arm64`, so an x86 server, a NAS and a Raspberry all pull the same tag.
+The images are `enrico1203/tgbackup-backend` and `enrico1203/tgbackup-frontend` on Docker Hub.
 `latest` follows the releases; `TGBACKUP_TAG=0.1.0` in `.env` pins the installation to one version,
 and `TGBACKUP_TAG=0.1` keeps it on the fixes of that minor. The image tags carry no `v`, unlike the
 git tag they are built from.
