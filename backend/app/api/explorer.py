@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import mimetypes
 from contextlib import aclosing
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -22,14 +22,24 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
 from ..deps import ActiveUserDep, SessionDep
-from ..models import Channel, FileEntry, FilePart, SyncJob, TelegramAccount, User
+from ..models import (
+    READABLE_STATES,
+    Channel,
+    FileEntry,
+    FilePart,
+    SyncJob,
+    TelegramAccount,
+    User,
+)
 from ..schemas import (
     DownloadTicketIn,
     DownloadTicketOut,
+    ExplorerFetchFolderIn,
     ExplorerFetchIn,
     ExplorerFile,
     ExplorerFolder,
     ExplorerListing,
+    RestoreFolderOut,
     RestoreOut,
 )
 from ..security import (
@@ -37,9 +47,10 @@ from ..security import (
     create_download_ticket,
     decode_download_ticket,
 )
-from ..sync.restore import restore_file
+from ..sync.restore import cancel_restore, restore_file, restore_folder
 from ..telegram.fast_transfer import MAX_CONNECTIONS, stream_document
 from ..telegram.manager import manager
+from ..telegram.throttle import installation_limiter
 
 router = APIRouter(prefix="/api/explorer", tags=["explorer"])
 log = logging.getLogger(__name__)
@@ -78,9 +89,20 @@ async def list_folder(
     channel_id: int,
     path: str = "",
     q: str = "",
+    trash: bool = False,
+    as_of: datetime | None = None,
     offset: int = 0,
     limit: int = Query(500, ge=1, le=2000),
 ) -> ExplorerListing:
+    """The channel as a folder tree: as it is now, as its trash, or as it was on a day.
+
+    The three are one query with a different filter on the state. `as_of` is the reason
+    the trash exists at all: a file is in the channel on a given day if it had been
+    uploaded by then and had not yet been trashed, which is exactly what the two dates on
+    the row say. What it cannot give back is the previous content of a file modified
+    since: a modification deletes the old parts and uploads new ones, so only one version
+    of a path is ever in the channel.
+    """
     channel = await session.get(Channel, channel_id)
     if channel is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Channel not found")
@@ -97,11 +119,23 @@ async def list_folder(
         FileEntry.size,
         FileEntry.parts_total,
         FileEntry.uploaded_at,
+        FileEntry.trashed_at,
         FileEntry.job_id,
     ).where(
         FileEntry.job_id.in_(select(SyncJob.id).where(SyncJob.channel_id == channel_id)),
-        FileEntry.state == "uploaded",
     )
+    if as_of is not None:
+        moment = as_of if as_of.tzinfo is not None else as_of.replace(tzinfo=UTC)
+        stmt = stmt.where(
+            FileEntry.state.in_(READABLE_STATES),
+            FileEntry.uploaded_at.is_not(None),
+            FileEntry.uploaded_at <= moment,
+            (FileEntry.trashed_at.is_(None)) | (FileEntry.trashed_at > moment),
+        )
+    elif trash:
+        stmt = stmt.where(FileEntry.state == "trashed")
+    else:
+        stmt = stmt.where(FileEntry.state == "uploaded")
     if prefix:
         stmt = stmt.where(
             FileEntry.rel_path >= prefix,
@@ -109,6 +143,14 @@ async def list_folder(
         )
 
     rows = (await session.execute(stmt)).all()
+
+    # One query for the whole channel rather than one per row: a channel is written by a
+    # handful of jobs, and only the trashed rows will ask.
+    retention = dict(
+        await session.execute(
+            select(SyncJob.id, SyncJob.trash_days).where(SyncJob.channel_id == channel_id)
+        )
+    )
 
     # Two jobs writing the same path into one channel: the most recently uploaded wins,
     # which is the rule the file browser and the download jobs already apply.
@@ -129,6 +171,16 @@ async def list_folder(
     bytes_total = 0
 
     def as_file(row, rel_path: str, fallback: str) -> ExplorerFile:
+        # The day the messages go for good, which is the one thing a trashed row cannot
+        # say on its own: the retention belongs to the job, not to the file.
+        purge_at = None
+        if row.trashed_at is not None:
+            days = retention.get(row.job_id, 0)
+            if days > 0:
+                trashed_at = row.trashed_at
+                if trashed_at.tzinfo is None:
+                    trashed_at = trashed_at.replace(tzinfo=UTC)
+                purge_at = trashed_at + timedelta(days=days)
         return ExplorerFile(
             id=row.id,
             name=row.name or fallback,
@@ -136,6 +188,8 @@ async def list_folder(
             size=row.size,
             parts=row.parts_total,
             uploaded_at=row.uploaded_at,
+            trashed_at=row.trashed_at,
+            purge_at=purge_at,
             job_id=row.job_id,
         )
 
@@ -221,7 +275,7 @@ async def create_ticket(
     entry = await session.get(FileEntry, payload.file_id)
     if entry is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found")
-    if entry.state != "uploaded":
+    if entry.state not in READABLE_STATES:
         raise HTTPException(
             status.HTTP_409_CONFLICT, "The file has not been uploaded to Telegram"
         )
@@ -260,6 +314,39 @@ async def fetch_to_destination(payload: ExplorerFetchIn, _: ActiveUserDep) -> Re
 
     progress = hub.restores[restore_id]
     return RestoreOut(restore_id=restore_id, target_path=progress.target_path)
+
+
+@router.post("/fetch-folder", response_model=RestoreFolderOut)
+async def fetch_folder(payload: ExplorerFetchFolderIn, _: ActiveUserDep) -> RestoreFolderOut:
+    """Writes a whole folder of the channel to a destination of this installation.
+
+    One operation and not one per file: the destination is prepared once, a file that
+    fails does not stop the others, and the whole thing has a single progress and a stop
+    button. What it writes is what the listing of that folder shows, the trash included,
+    each file keeping its path relative to the folder that was asked for.
+    """
+    try:
+        restore_id, files, total = await restore_folder(
+            payload.channel_id, _clean_path(payload.path), payload.dest_type, payload.path_to
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    from ..sync.progress import hub
+
+    return RestoreFolderOut(
+        restore_id=restore_id,
+        target_path=hub.restores[restore_id].target_path,
+        files=files,
+        bytes=total,
+    )
+
+
+@router.post("/restore/{restore_id}/cancel", status_code=status.HTTP_204_NO_CONTENT)
+async def stop_restore(restore_id: str, _: ActiveUserDep) -> None:
+    """Stops a restore at its next part. What is already written stays where it is."""
+    if not cancel_restore(restore_id):
+        raise HTTPException(status.HTTP_409_CONFLICT, "That restore is not running")
 
 
 def _content_disposition(name: str) -> str:
@@ -326,7 +413,13 @@ async def _stream_file(
             # connected until the garbage collector gets to them, holding on to part of
             # the connection budget of the account.
             async with aclosing(
-                stream_document(client, message.document, max_connections=max_connections)
+                stream_document(
+                    client,
+                    message.document,
+                    max_connections=max_connections,
+                    # A download to a browser spends the same line as everything else.
+                    limiter=installation_limiter(),
+                )
             ) as stream:
                 async for chunk in stream:
                     got += len(chunk)
@@ -364,7 +457,7 @@ async def download_file(
     entry = await session.get(FileEntry, file_id)
     if entry is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "File not found")
-    if entry.state != "uploaded":
+    if entry.state not in READABLE_STATES:
         raise HTTPException(
             status.HTTP_409_CONFLICT, "The file has not been uploaded to Telegram"
         )

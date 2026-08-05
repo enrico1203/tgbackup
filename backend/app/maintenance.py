@@ -28,6 +28,7 @@ restart, since running them again costs nothing and repeats the same work.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import uuid
@@ -37,8 +38,17 @@ from datetime import datetime
 from sqlalchemy import select, update
 from telethon.errors import FloodWaitError
 
+from . import notify
 from .db import SessionLocal
-from .models import MTIME_UNKNOWN, Channel, FileEntry, FilePart, SyncJob, utcnow
+from .models import (
+    MTIME_UNKNOWN,
+    READABLE_STATES,
+    Channel,
+    FileEntry,
+    FilePart,
+    SyncJob,
+    utcnow,
+)
 from .telegram.manager import manager
 from .transfer import insert_files
 
@@ -195,7 +205,10 @@ async def check_channel(task: Task, channel_id: int, repair: bool) -> None:
                 FileEntry.job_id.in_(
                     select(SyncJob.id).where(SyncJob.channel_id == channel_id)
                 ),
-                FileEntry.state == "uploaded",
+                # The trash counts: its messages are in the channel and are exactly the
+                # ones somebody will come looking for, so a check that skipped them would
+                # certify a channel it had not looked at.
+                FileEntry.state.in_(READABLE_STATES),
             )
         )
         parts = list(rows)
@@ -236,14 +249,17 @@ async def check_channel(task: Task, channel_id: int, repair: bool) -> None:
         task.step = "marking the damaged files"
         async with SessionLocal() as session:
             for file_id, reason in broken_files.items():
-                await session.execute(
+                result = await session.execute(
                     update(FileEntry)
-                    .where(FileEntry.id == file_id)
+                    .where(FileEntry.id == file_id, FileEntry.state == "uploaded")
                     # stale and not error: the runner deletes whatever parts are still
                     # recorded, ignores the ones already gone, and uploads the file again.
+                    # Only a file the source still has, though: one in the trash cannot be
+                    # uploaded again by anybody, and marking it would only turn a damaged
+                    # copy into a job that fails at every run.
                     .values(state="stale", error=f"Check: {reason}")
                 )
-                marked += 1
+                marked += result.rowcount or 0
             await session.commit()
 
     sample = []
@@ -271,6 +287,65 @@ async def check_channel(task: Task, channel_id: int, repair: bool) -> None:
         "Check of channel %d: %d parts, %d broken files, %d marked",
         channel_id, len(parts), len(broken_files), marked,
     )
+
+
+async def scheduled_check(task: Task, channel_id: int, repair: bool) -> None:
+    """The automatic check: the same work, plus a record of it and a report.
+
+    What distinguishes a backup from a folder of files is that somebody looks at it
+    without being asked. The outcome is written on the channel row, because the registry
+    keeps twenty tasks in memory and loses them at every restart, while a check that runs
+    once a month has to still be readable the month after. The report goes out as a
+    failure only when something is actually broken, so the `errors` notification mode
+    stays quiet on a healthy channel and `all` gets the monthly confirmation.
+    """
+    outcome = "completed"
+    error: str | None = None
+    try:
+        await check_channel(task, channel_id, repair)
+    except Exception as exc:
+        outcome = "failed"
+        error = str(exc)[:400]
+        raise
+    finally:
+        broken = int(task.result.get("files_broken", 0) or 0)
+        async with SessionLocal() as session:
+            channel = await session.get(Channel, channel_id)
+            if channel is not None:
+                channel.last_check_at = utcnow()
+                channel.last_check_result = json.dumps(
+                    {**task.result, "outcome": outcome, "error": error}
+                )[:4000]
+                account_id = channel.account_id
+                title = channel.title
+                await session.commit()
+            else:
+                account_id = None
+
+        if account_id is not None:
+            lines = [
+                f"Channel: {title}",
+                f"Files checked: {task.result.get('files_checked', 0)}, "
+                f"parts: {task.result.get('parts_checked', 0)}",
+            ]
+            if error:
+                lines.append(f"Error: {error}")
+            elif broken:
+                lines.append(
+                    f"Damaged files: {broken}, of which "
+                    f"{task.result.get('files_marked', 0)} marked for re-upload"
+                )
+                lines.extend(task.result.get("sample", [])[:5])
+            else:
+                lines.append("Every recorded message is in the channel with the right size")
+
+            await notify.send_report(
+                account_id=account_id,
+                title=f"channel check {title}",
+                outcome=outcome,
+                lines=lines,
+                failed=bool(error) or broken > 0,
+            )
 
 
 # Rebuild

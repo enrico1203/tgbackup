@@ -18,6 +18,8 @@ import { api } from "../lib/api";
 import { formatBytes, formatDateTime, formatInterval } from "../lib/format";
 import { useProgress } from "../lib/progress";
 import ScheduleGrid, { ALWAYS, describeSchedule } from "../components/ScheduleGrid";
+
+const MEGA = 1_000_000;
 import DownloadActivity, { downloadPhaseLabel } from "../components/DownloadActivity";
 import RemoteBrowser from "../components/RemoteBrowser";
 import type { Account, Channel, DownloadJob, RcloneStatus } from "../lib/types";
@@ -52,6 +54,10 @@ function DownloadForm({ job, onClose }: { job: DownloadJob | null; onClose: () =
   const [intervalHours, setIntervalHours] = useState(String(job?.interval_hours ?? 24));
   const [scheduleHours, setScheduleHours] = useState(job?.schedule_hours ?? ALWAYS);
   const [stopOutsideWindow, setStopOutsideWindow] = useState(job?.stop_outside_window ?? false);
+  const [throttle, setThrottle] = useState(
+    job?.throttle_bps ? String(job.throttle_bps / MEGA) : "",
+  );
+  const [silenceAlerts, setSilenceAlerts] = useState(job?.silence_alerts ?? true);
   const [enabled, setEnabled] = useState(job?.enabled ?? true);
 
   const { data: channels } = useQuery({
@@ -77,6 +83,8 @@ function DownloadForm({ job, onClose }: { job: DownloadJob | null; onClose: () =
         interval_hours: Number(intervalHours),
         schedule_hours: scheduleHours,
         stop_outside_window: stopOutsideWindow,
+        throttle_bps: throttle ? Math.round(Number(throttle) * MEGA) : 0,
+        silence_alerts: silenceAlerts,
         enabled,
       };
       if (job) {
@@ -283,11 +291,36 @@ function DownloadForm({ job, onClose }: { job: DownloadJob | null; onClose: () =
           </label>
         ) : null}
 
-        {scheduleHours.includes("1") ? null : (
+        {scheduleHours.includes("1") || scheduleHours.includes("2") ? null : (
           <Alert tone="info">
             Every hour is closed: the job will only ever run when you press Run now.
           </Alert>
         )}
+
+        <Field
+          label="Speed limit (MB/s)"
+          hint={
+            scheduleHours.includes("2")
+              ? "Applied in the hours painted as limited. The rest of the week the job goes as fast as the line allows."
+              : "Applied at every hour, since no hour is painted as limited. Empty or zero means no limit."
+          }
+        >
+          <input
+            value={throttle}
+            onChange={(e) => setThrottle(e.target.value.replace(/[^\d.]/g, ""))}
+            inputMode="decimal"
+            placeholder="0"
+          />
+        </Field>
+
+        <label className="switch">
+          <input
+            type="checkbox"
+            checked={silenceAlerts}
+            onChange={(e) => setSilenceAlerts(e.target.checked)}
+          />
+          <span>Warn me if this job stops finishing runs</span>
+        </label>
 
         <label className="switch">
           <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />

@@ -5,6 +5,7 @@ import {
   CalendarClock,
   CheckCircle2,
   FileText,
+  Gauge,
   HardDrive,
   PencilLine,
   Trash2,
@@ -14,12 +15,15 @@ import { api } from "../lib/api";
 import { formatDateTime } from "../lib/format";
 import type {
   Account,
+  BandwidthPreferences,
   NotifyPreferences,
   RcloneStatus,
   SchedulePreferences,
 } from "../lib/types";
 import RemoteBrowser from "../components/RemoteBrowser";
 import { Alert, Card, CardHead, Field, Pill, Spinner } from "../components/ui";
+
+const MEGA = 1_000_000;
 
 const PLACEHOLDER = `[mycloud]
 type = drive
@@ -35,6 +39,7 @@ function Notifications() {
   const queryClient = useQueryClient();
   const [events, setEvents] = useState<NotifyPreferences["events"] | null>(null);
   const [accountId, setAccountId] = useState<number | null>(null);
+  const [silence, setSilence] = useState<string | null>(null);
 
   const { data } = useQuery({
     queryKey: ["notifications"],
@@ -52,13 +57,18 @@ function Notifications() {
       queryClient.setQueryData(["notifications"], result);
       setEvents(null);
       setAccountId(null);
+      setSilence(null);
     },
   });
 
   const currentEvents = events ?? data?.events ?? "off";
   const currentAccount = accountId ?? data?.account_id ?? 0;
+  const currentSilence = silence ?? String(data?.silence_days ?? 3);
   const dirty =
-    data !== undefined && (currentEvents !== data.events || currentAccount !== data.account_id);
+    data !== undefined &&
+    (currentEvents !== data.events ||
+      currentAccount !== data.account_id ||
+      (Number(currentSilence) || 0) !== data.silence_days);
 
   return (
     <Card>
@@ -110,6 +120,18 @@ function Notifications() {
               ))}
             </select>
           </Field>
+
+          <Field
+            label="Warn me after this many days of silence"
+            hint="A job that has not finished a run successfully in this long is reported, disabled ones included. Zero turns the alarm off. A job whose interval is longer than this gets twice its interval instead."
+          >
+            <input
+              value={currentSilence}
+              onChange={(event) => setSilence(event.target.value.replace(/\D/g, ""))}
+              inputMode="numeric"
+              placeholder="3"
+            />
+          </Field>
         </div>
 
         <div className="row">
@@ -117,7 +139,13 @@ function Notifications() {
             type="button"
             className="btn"
             disabled={!dirty || save.isPending}
-            onClick={() => save.mutate({ events: currentEvents, account_id: currentAccount })}
+            onClick={() =>
+              save.mutate({
+                events: currentEvents,
+                account_id: currentAccount,
+                silence_days: Number(currentSilence) || 0,
+              })
+            }
           >
             {save.isPending ? <Spinner /> : null}
             Save
@@ -212,6 +240,76 @@ function Timezone() {
               Use this browser's zone
             </button>
           ) : null}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function Bandwidth() {
+  const queryClient = useQueryClient();
+  const [value, setValue] = useState<string | null>(null);
+
+  const { data } = useQuery({
+    queryKey: ["bandwidth-preferences"],
+    queryFn: () => api.get<BandwidthPreferences>("/api/preferences/bandwidth"),
+  });
+
+  const save = useMutation({
+    mutationFn: (payload: BandwidthPreferences) =>
+      api.put<BandwidthPreferences>("/api/preferences/bandwidth", payload),
+    onSuccess: (result) => {
+      queryClient.setQueryData(["bandwidth-preferences"], result);
+      setValue(null);
+    },
+  });
+
+  const stored = data ? String(data.rate_limit_bps / MEGA) : "";
+  const current = value ?? (data && data.rate_limit_bps ? stored : "");
+  const dirty = data !== undefined && (Number(current) || 0) * MEGA !== data.rate_limit_bps;
+
+  return (
+    <Card>
+      <CardHead title="Bandwidth limit">
+        <Pill tone="mute">
+          <Gauge size={11} />
+          {data && data.rate_limit_bps ? `${data.rate_limit_bps / MEGA} MB/s` : "no limit"}
+        </Pill>
+      </CardHead>
+
+      <div className="card-body">
+        <p style={{ margin: 0, color: "var(--muted)", maxWidth: "70ch" }}>
+          The ceiling for everything this installation transfers, uploads, downloads,
+          restores and browser downloads together. A job with a limit of its own is held
+          by whichever of the two is tighter. It applies immediately, including to the
+          runs already going.
+        </p>
+
+        {save.isError ? <Alert>{(save.error as Error).message}</Alert> : null}
+
+        <div className="grid-2">
+          <Field label="Limit (MB/s)" hint="Empty or zero means no limit.">
+            <input
+              value={current}
+              onChange={(event) => setValue(event.target.value.replace(/[^\d.]/g, ""))}
+              inputMode="decimal"
+              placeholder="0"
+            />
+          </Field>
+        </div>
+
+        <div className="row">
+          <button
+            type="button"
+            className="btn"
+            disabled={!dirty || save.isPending}
+            onClick={() =>
+              save.mutate({ rate_limit_bps: Math.round((Number(current) || 0) * MEGA) })
+            }
+          >
+            {save.isPending ? <Spinner /> : null}
+            Save
+          </button>
         </div>
       </div>
     </Card>
@@ -425,6 +523,7 @@ export default function Settings() {
 
       <Notifications />
       <Timezone />
+      <Bandwidth />
 
       {browsing ? (
         <RemoteBrowser remote={browsing} onClose={() => setBrowsing(null)} />

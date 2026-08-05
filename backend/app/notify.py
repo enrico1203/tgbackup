@@ -25,6 +25,10 @@ log = logging.getLogger(__name__)
 
 EVENTS_KEY = "notify_events"
 ACCOUNT_KEY = "notify_account"
+# After how many days without a successful run a job is reported as silent. 0 turns the
+# alarm off. See sync/scheduler.py, _check_silence.
+SILENCE_KEY = "notify_silence_days"
+DEFAULT_SILENCE_DAYS = 3
 
 # off: nothing. errors: only runs that failed or left files behind. all: every run.
 EVENTS = ("off", "errors", "all")
@@ -46,10 +50,25 @@ async def load_preferences(session) -> tuple[str, int]:
     return events, account_id
 
 
-async def save_preferences(session, events: str, account_id: int) -> None:
+async def load_silence_days(session) -> int:
+    """Days without a successful run after which a job is reported. 0 is off."""
+    row = await session.scalar(select(Setting).where(Setting.key == SILENCE_KEY))
+    if row is None:
+        return DEFAULT_SILENCE_DAYS
+    try:
+        return max(0, int(row.value))
+    except ValueError:
+        return DEFAULT_SILENCE_DAYS
+
+
+async def save_preferences(session, events: str, account_id: int, silence_days: int) -> None:
     if events not in EVENTS:
         raise ValueError(f"Unknown notification mode: {events}")
-    for key, value in ((EVENTS_KEY, events), (ACCOUNT_KEY, str(account_id))):
+    for key, value in (
+        (EVENTS_KEY, events),
+        (ACCOUNT_KEY, str(account_id)),
+        (SILENCE_KEY, str(max(0, silence_days))),
+    ):
         row = await session.scalar(select(Setting).where(Setting.key == key))
         if row is None:
             session.add(Setting(key=key, value=value))
@@ -83,6 +102,17 @@ def format_duration(start: datetime | None, end: datetime | None) -> str:
     if seconds < 86400:
         return f"{seconds // 3600}h {(seconds % 3600) // 60}m"
     return f"{seconds // 86400}d {(seconds % 86400) // 3600}h"
+
+
+async def send_alert(account_id: int, title: str, lines: list[str]) -> None:
+    """A report about something that did not happen.
+
+    It goes out as a failure, so the `errors` mode delivers it: the whole point of the
+    silence alarm is that it reaches somebody who only wants to hear about problems.
+    """
+    await send_report(
+        account_id=account_id, title=title, outcome="no news", lines=lines, failed=True
+    )
 
 
 async def send_report(

@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     split_standard: int = 1_900_000_000
 
     scheduler_tick_seconds: int = 10
+    # The slow loop: the silence alarm and the scheduled channel checks. Both are
+    # answered in days and hours, so asking more often would only cost queries.
+    watcher_tick_seconds: int = 3600
     progress_interval_seconds: float = 1.0
 
     # A single Telegram call that never comes back. Telethon returns a bare future for

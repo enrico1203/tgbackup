@@ -36,6 +36,7 @@ from telethon.tl.functions.upload import (
 from telethon.tl.types import Document, InputDocumentFileLocation, InputFile, InputFileBig
 
 from ..config import settings
+from .throttle import ChainedLimiter
 
 log = logging.getLogger(__name__)
 
@@ -247,11 +248,16 @@ async def upload_slice(
     cancel=None,
     source: str = "",
     max_connections: int = MAX_CONNECTIONS,
+    limiter: ChainedLimiter | None = None,
 ) -> InputFile | InputFileBig:
     """Uploads `length` bytes taken from `reader` and returns the Telegram handle.
 
     `reader` is an async context manager with a read(size) method: it can be a local file
     or an rclone stream. In neither case is anything written to disk.
+
+    `limiter`, when there is one, is asked before every chunk goes to a sender. This loop
+    is the only place the whole upload passes through, whatever the source and however
+    many connections are open, which is what makes one limit here a limit on everything.
     """
     if length <= 0:
         raise ValueError("The slice to upload is empty")
@@ -300,6 +306,8 @@ async def upload_slice(
                     )
                 if md5 is not None:
                     md5.update(chunk)
+                if limiter is not None:
+                    await limiter.take(len(chunk))
                 await senders[ticker].send(chunk)
                 ticker = (ticker + 1) % connections
                 remaining -= len(chunk)
@@ -362,6 +370,7 @@ async def download_document(
     on_progress: ProgressCallback | None = None,
     cancel=None,
     max_connections: int = MAX_CONNECTIONS,
+    limiter: ChainedLimiter | None = None,
 ) -> int:
     """Downloads a document in parallel, writing it at `base_offset` inside `out_fd`.
 
@@ -386,6 +395,11 @@ async def download_document(
             offset, data = item
             if not data:
                 return
+            # After the part arrived rather than before asking for it: a sender that has
+            # to wait here does not ask for its next one, which is what holds the average
+            # down. The overshoot is bounded by one part per connection.
+            if limiter is not None:
+                await limiter.take(len(data))
             await asyncio.to_thread(os.pwrite, out_fd, data, base_offset + offset)
             async with lock:
                 written += len(data)
@@ -408,6 +422,7 @@ async def stream_document(
     on_progress: ProgressCallback | None = None,
     cancel=None,
     max_connections: int = MAX_CONNECTIONS,
+    limiter: ChainedLimiter | None = None,
 ):
     """Yields the bytes of a document in order, downloading them in parallel.
 
@@ -442,6 +457,8 @@ async def stream_document(
                 offset, data = item
                 if not data:
                     return
+                if limiter is not None:
+                    await limiter.take(len(data))
                 async with condition:
                     while offset - emitted >= window:
                         await condition.wait()

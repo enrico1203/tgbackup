@@ -13,8 +13,10 @@ import {
   FolderTree,
   Hash,
   HardDrive,
+  History,
   Laptop,
   Search,
+  Trash2,
   X,
 } from "lucide-react";
 
@@ -24,9 +26,11 @@ import { formatBytes, formatDateTime } from "../lib/format";
 import type {
   DownloadTicket,
   ExplorerFile,
+  ExplorerFolder,
   ExplorerListing,
   Job,
   RcloneStatus,
+  RestoreFolderOut,
   RestoreOut,
 } from "../lib/types";
 import ChannelPicker from "../components/ChannelPicker";
@@ -43,6 +47,17 @@ const LAST_REMOTE = "tgbackup.explorer.remote";
 
 type Destination = "browser" | "local" | "rclone";
 
+function today(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+// The end of the chosen day, in the timezone of whoever is looking: "as it was on the
+// 20th" means after everything that happened on the 20th, not at midnight before it.
+function endOfDay(day: string): string {
+  const date = new Date(`${day}T23:59:59`);
+  return Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
+}
+
 export default function Explorer() {
   const [params, setParams] = useSearchParams();
   const [page, setPage] = useState(0);
@@ -57,6 +72,9 @@ export default function Explorer() {
 
   // The file whose destination is being chosen, and the choice itself.
   const [chosen, setChosen] = useState<ExplorerFile | null>(null);
+  // A folder is restored through the same dialog, minus the browser: a folder is not
+  // something that can be streamed into a download.
+  const [chosenFolder, setChosenFolder] = useState<ExplorerFolder | null>(null);
   const [destination, setDestination] = useState<Destination>("browser");
   const [localPath, setLocalPath] = useState(() => localStorage.getItem(LAST_LOCAL) ?? "");
   const [remote, setRemote] = useState(() => localStorage.getItem(LAST_REMOTE) ?? "");
@@ -78,6 +96,26 @@ export default function Explorer() {
   const path = params.get("path") ?? "";
   const search = params.get("q") ?? "";
   const segments = path ? path.split("/") : [];
+
+  // What the listing is looking at: the channel as it is, what the trash still holds, or
+  // the channel as it stood at the end of a day. All three live in the address, so a view
+  // of last Tuesday is a link somebody can keep.
+  const view = (params.get("view") ?? "current") as "current" | "trash" | "asof";
+  const asOfDay = params.get("as_of") ?? "";
+
+  const setView = (next: "current" | "trash" | "asof", day?: string) => {
+    const updated = new URLSearchParams(params);
+    if (next === "current") {
+      updated.delete("view");
+      updated.delete("as_of");
+    } else {
+      updated.set("view", next);
+      if (next === "asof") updated.set("as_of", day || asOfDay || today());
+      else updated.delete("as_of");
+    }
+    setParams(updated);
+    setPage(0);
+  };
 
   // Opening a folder ends the search, the way it does in a file manager: the results
   // came from anywhere below, and staying in them while the folder changes underneath
@@ -141,6 +179,8 @@ export default function Explorer() {
   query.set("channel_id", String(selected ?? 0));
   query.set("path", path);
   if (search) query.set("q", search);
+  if (view === "trash") query.set("trash", "true");
+  if (view === "asof" && asOfDay) query.set("as_of", endOfDay(asOfDay));
   query.set("offset", String(page * PAGE_SIZE));
   query.set("limit", String(PAGE_SIZE));
 
@@ -176,26 +216,46 @@ export default function Explorer() {
     },
   });
 
+  const fetchFolder = useMutation({
+    mutationFn: (body: {
+      channel_id: number;
+      path: string;
+      dest_type: Destination;
+      path_to: string;
+    }) => api.post<RestoreFolderOut>("/api/explorer/fetch-folder", body),
+    onSuccess: (_result, body) => {
+      if (body.dest_type === "local") localStorage.setItem(LAST_LOCAL, body.path_to);
+      else localStorage.setItem(LAST_REMOTE, body.path_to);
+      setChosenFolder(null);
+    },
+  });
+
   const { data: rcloneStatus } = useQuery({
     queryKey: ["rclone-status"],
     queryFn: () => api.get<RcloneStatus>("/api/rclone"),
-    enabled: chosen !== null,
+    enabled: chosen !== null || chosenFolder !== null,
   });
 
   const start = () => {
+    const where = destination === "local" ? localPath.trim() : remote.trim();
+    if (chosenFolder) {
+      fetchFolder.mutate({
+        channel_id: selected ?? 0,
+        path: chosenFolder.path,
+        dest_type: destination,
+        path_to: where,
+      });
+      return;
+    }
     if (!chosen) return;
     if (destination === "browser") {
       download.mutate(chosen.id);
       return;
     }
-    fetchTo.mutate({
-      file_id: chosen.id,
-      dest_type: destination,
-      path: destination === "local" ? localPath.trim() : remote.trim(),
-    });
+    fetchTo.mutate({ file_id: chosen.id, dest_type: destination, path: where });
   };
 
-  const busy = download.isPending || fetchTo.isPending;
+  const busy = download.isPending || fetchTo.isPending || fetchFolder.isPending;
 
   const title = data?.channel_title ?? groups.find((g) => g.channelId === selected)?.title;
   const pages = data ? Math.ceil(data.entries_total / PAGE_SIZE) : 0;
@@ -343,11 +403,63 @@ export default function Explorer() {
             </p>
           ) : null}
 
-          <p className="explorer-note">
-            Folders and files come from the index in the database, so browsing costs
-            nothing. Telegram is contacted only when a file is downloaded, and a file
-            split into several parts arrives as one.
-          </p>
+          <div className="row wrap" style={{ gap: 8 }}>
+            <button
+              type="button"
+              className={view === "current" ? "btn small" : "btn ghost small"}
+              onClick={() => setView("current")}
+            >
+              <FolderTree size={13} />
+              Now
+            </button>
+            <button
+              type="button"
+              className={view === "trash" ? "btn small" : "btn ghost small"}
+              onClick={() => setView("trash")}
+            >
+              <Trash2 size={13} />
+              Trash
+            </button>
+            <button
+              type="button"
+              className={view === "asof" ? "btn small" : "btn ghost small"}
+              onClick={() => setView("asof")}
+            >
+              <History size={13} />
+              As it was
+            </button>
+            {view === "asof" ? (
+              <input
+                type="date"
+                value={asOfDay}
+                max={today()}
+                onChange={(event) => setView("asof", event.target.value)}
+                style={{ width: 170 }}
+              />
+            ) : null}
+          </div>
+
+          {view === "current" ? (
+            <p className="explorer-note">
+              Folders and files come from the index in the database, so browsing costs
+              nothing. Telegram is contacted only when a file is downloaded, and a file
+              split into several parts arrives as one.
+            </p>
+          ) : view === "trash" ? (
+            <p className="explorer-note">
+              Files that are no longer at the source and whose messages are still in the
+              channel. They can be downloaded exactly like the others until the retention
+              of their job runs out, and they come back on their own, at no cost, if the
+              file returns to the source unchanged. A job with no retention set deletes
+              straight away and never fills this.
+            </p>
+          ) : (
+            <p className="explorer-note">
+              The channel as it stood at the end of that day: everything uploaded by then
+              that had not yet been deleted. A file modified since shows its current
+              content, because a modification replaces the messages of the old version.
+            </p>
+          )}
 
           {download.isError ? <Alert>{(download.error as Error).message}</Alert> : null}
         </div>
@@ -359,11 +471,23 @@ export default function Explorer() {
         ) : empty ? (
           <Empty
             icon={<FolderTree size={26} color="var(--muted)" />}
-            title={path ? "Empty folder" : "Nothing in this channel yet"}
+            title={
+              view === "trash"
+                ? "The trash is empty"
+                : view === "asof"
+                  ? "Nothing was here on that day"
+                  : path
+                    ? "Empty folder"
+                    : "Nothing in this channel yet"
+            }
             hint={
-              path
-                ? "Everything that was here has been removed from the index, or it is still waiting to be uploaded."
-                : "Files show up after the first run of a sync job writing here."
+              view === "trash"
+                ? "Nothing has disappeared from the source, or the jobs writing here delete straight away instead of keeping a trash. The retention is set on the job."
+                : view === "asof"
+                  ? "Either nothing had been uploaded by then, or everything that had is a file that arrived later."
+                  : path
+                    ? "Everything that was here has been removed from the index, or it is still waiting to be uploaded."
+                    : "Files show up after the first run of a sync job writing here."
             }
           />
         ) : (
@@ -380,25 +504,42 @@ export default function Explorer() {
             ) : null}
 
             {data.folders.map((folder) => (
-              <button
-                key={`folder:${folder.path}`}
-                type="button"
-                className="explorer-row"
-                onClick={() => goTo(selected, folder.path)}
-              >
+              <div key={`folder:${folder.path}`} className="explorer-row static">
+                {/* The name opens the folder, the button restores it. Two actions on one
+                    row, so the row itself can no longer be the button. */}
                 <Folder size={16} className="explorer-icon folder" />
-                <span className="explorer-name">
+                <button
+                  type="button"
+                  className="explorer-name as-link"
+                  onClick={() => goTo(selected, folder.path)}
+                >
                   {folder.name}
                   <span className={search ? "explorer-sub mono" : "explorer-sub num"}>
                     {search
                       ? folder.path
                       : `${folder.files.toLocaleString("en-US")} ${folder.files === 1 ? "file" : "files"}`}
                   </span>
-                </span>
+                </button>
                 <span className="explorer-size num">{formatBytes(folder.bytes)}</span>
                 <span className="explorer-date" />
-                <span className="explorer-action" />
-              </button>
+                <span className="explorer-action">
+                  <button
+                    type="button"
+                    className="btn ghost small"
+                    onClick={() => {
+                      setChosenFolder(folder);
+                      // The browser cannot take a folder: the choice starts on the
+                      // destination that can.
+                      setDestination(destination === "browser" ? "local" : destination);
+                      fetchFolder.reset();
+                    }}
+                    title="Write this folder and everything below it to a destination on the server"
+                  >
+                    <Download size={13} />
+                    Restore
+                  </button>
+                </span>
+              </div>
             ))}
 
             {data.files.map((file) => (
@@ -412,6 +553,11 @@ export default function Explorer() {
                   {search ? (
                     <span className="explorer-sub mono">
                       {file.path.includes("/") ? file.path.slice(0, file.path.lastIndexOf("/")) : "."}
+                    </span>
+                  ) : file.trashed_at ? (
+                    <span className="explorer-sub num">
+                      gone from the source {formatDateTime(file.trashed_at)}
+                      {file.purge_at ? `, deleted for good ${formatDateTime(file.purge_at)}` : ""}
                     </span>
                   ) : file.parts > 1 ? (
                     <span className="explorer-sub num">
@@ -465,13 +611,25 @@ export default function Explorer() {
         ) : null}
       </Card>
 
-      {chosen ? (
+      {chosen || chosenFolder ? (
         <Modal
-          title={`Download ${chosen.name}`}
-          onClose={() => setChosen(null)}
+          title={
+            chosenFolder ? `Restore ${chosenFolder.name}` : `Download ${chosen?.name ?? ""}`
+          }
+          onClose={() => {
+            setChosen(null);
+            setChosenFolder(null);
+          }}
           footer={
             <>
-              <button type="button" className="btn ghost" onClick={() => setChosen(null)}>
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => {
+                  setChosen(null);
+                  setChosenFolder(null);
+                }}
+              >
                 Cancel
               </button>
               <button
@@ -491,14 +649,29 @@ export default function Explorer() {
           }
         >
           <div className="row wrap" style={{ gap: 14, color: "var(--muted)", fontSize: 12.5 }}>
-            <span className="num">{formatBytes(chosen.size)}</span>
-            <span className="num">
-              {chosen.parts === 1 ? "one message" : `${chosen.parts} parts, joined on the way`}
-            </span>
-            <span className="mono truncate">{chosen.path}</span>
+            {chosenFolder ? (
+              <>
+                <span className="num">{formatBytes(chosenFolder.bytes)}</span>
+                <span className="num">
+                  {chosenFolder.files.toLocaleString("en-US")}{" "}
+                  {chosenFolder.files === 1 ? "file" : "files"}, this folder and everything
+                  below it
+                </span>
+                <span className="mono truncate">{chosenFolder.path}</span>
+              </>
+            ) : chosen ? (
+              <>
+                <span className="num">{formatBytes(chosen.size)}</span>
+                <span className="num">
+                  {chosen.parts === 1 ? "one message" : `${chosen.parts} parts, joined on the way`}
+                </span>
+                <span className="mono truncate">{chosen.path}</span>
+              </>
+            ) : null}
           </div>
 
           <div className="picker">
+            {chosenFolder ? null : (
             <label className={destination === "browser" ? "picker-option active" : "picker-option"}>
               <input
                 type="radio"
@@ -515,6 +688,7 @@ export default function Explorer() {
                 </span>
               </span>
             </label>
+            )}
 
             <label className={destination === "local" ? "picker-option active" : "picker-option"}>
               <input
@@ -604,8 +778,17 @@ export default function Explorer() {
             </Field>
           ) : null}
 
+          {chosenFolder ? (
+            <p className="explorer-note">
+              Every file keeps its path relative to this folder. Nothing at the
+              destination is ever deleted, and a file that fails does not stop the rest:
+              the panel at the top of the page counts them and can stop the whole thing.
+            </p>
+          ) : null}
+
           {download.isError ? <Alert>{(download.error as Error).message}</Alert> : null}
           {fetchTo.isError ? <Alert>{(fetchTo.error as Error).message}</Alert> : null}
+          {fetchFolder.isError ? <Alert>{(fetchFolder.error as Error).message}</Alert> : null}
         </Modal>
       ) : null}
 

@@ -188,6 +188,26 @@ a schedule that cannot be read must never be the reason a backup stops. `window_
 `next_window_at` are computed on the job out, since the browser would have to redo the timezone
 arithmetic to get the same answer.
 
+**Bandwidth limit** (`telegram/throttle.py`): a token bucket the transfer takes from before the
+bytes move. There is exactly one place where the speed of an upload can be decided, the reader loop
+in `upload_slice` that every chunk passes through whatever the source and however many connections
+are open, and one for a download, the part a `_DownloadSender` has just brought back. So the limit is
+taken there and nothing else has to know it exists. On the way down the take happens **after** the
+part arrived rather than before asking for it: a sender waiting there does not ask for its next one,
+which is what holds the average, and the overshoot is bounded by one part per connection.
+
+The rate is a **function returning a number**, not a number, consulted as the bucket refills. That is
+what lets an hour boundary change the speed of a run already going, with nothing to restart, and it
+is why the window grew a third state instead of a second grid: `schedule_hours` is now "0" closed,
+"1" open, "2" open at the speed set on the job. `normalise` keeps the "2", `is_open` treats it as
+open because it changes the speed and not the permission, and `stop_outside_window` still means "0"
+alone, so every existing window reads exactly as it did. A job with a ceiling and no hour painted
+"2" is limited at every hour, which is the plain "never faster than this" case. The installation
+limit is one `settings` row, kept in a module level value read at startup and rewritten when saved,
+because a query per chunk is not an option; the two apply together through `ChainedLimiter`, and
+whichever is tighter is what happens. A restore and a browser download carry the installation limit
+only, since no job owns them.
+
 **Scheduler**: asyncio supervisor with a 10 s tick. The `running` state lives in the database, so the
 same job never overlaps itself even if it runs for days. `next_run_at` is computed from the end of
 the run. If a job is stopped by process shutdown, `next_run_at` stays unchanged and the job resumes
@@ -218,6 +238,45 @@ next: a file already in the channel that the filter now leaves out is missing fr
 the diff sees it as removed and deletes it from the channel. That is the intended behaviour and the
 form says so.
 
+**Deletion guard** (`sync/runner.py`, `guard_verdict`): a ceiling on how much of a backup one run
+may delete. A source that fails to mount is not an error, it is an empty folder: `list_files`
+returns nothing, the diff concludes that every file was removed and the channel is emptied message
+by message. The guard is per job, a percentage of the indexed files and an absolute number, either
+one enough to stop the run, both off at zero. It is evaluated inside `_diff` **before anything is
+committed**, so a run stopped there has neither marked a deletion nor recorded a new file and the
+index is exactly as it was; had it run after the states were written, the `to_delete` rows would
+already be there waiting for the next run to apply them. The percentage is not applied below
+`GUARD_MIN_ENTRIES` (10) files, where any single deletion is a large share of the whole and the
+ratio says nothing. Existing jobs get 20% from the DDL default, which is deliberate: the feature is
+worth nothing if it has to be turned on first. A trip is a failed run with `status = "error"`, so
+the notification already carries it, and the only way through is `POST /api/jobs/{id}/allow-deletions`,
+which sets a flag the next run consumes whether or not it needed it: an acknowledgement is worth one
+execution, not a permanent disarming. `stale` entries are re-uploads and are not counted.
+
+**Trash instead of immediate deletion** (`trash_days` on the job, `trashed` state, `trashed_at` on
+the entry): a file that disappears from the source stops being deleted within the run that noticed
+and becomes `trashed`, keeping every one of its parts. Telegram charges nothing for the space, so
+the only cost of holding it is an index row. Three things follow. The file stays downloadable and
+restorable, which is what somebody wants from it in the first place, so `READABLE_STATES` and not
+`state == "uploaded"` is what the explorer, the restore, the ticket and the channel check ask for.
+A file that comes back to the source unchanged is **revived**, `trashed` back to `uploaded` with
+`trashed_at` cleared and not one byte uploaded, because its messages were never deleted; only one
+that came back different goes through `stale`. And the channel can be browsed as it stood on a past
+day, `as_of` in `api/explorer.py`: a file was there if it had been uploaded by then and had not yet
+been trashed, which is the two dates on the row and nothing more. The purge is `_purge_trash` in the
+runner, which only moves expired entries to `to_delete` and lets the one deletion path in the
+application do the work; with the retention set back to zero the whole trash expires at once, which
+is what turning the feature off has to mean. Only a file in `uploaded` is worth trashing: a pending
+one has no message to hold on to. A damaged file found in the trash by a check is reported but never
+marked `stale`, since the source cannot upload it again.
+
+**What the trash does not keep is the previous version of a modified file.** A modification still
+deletes the old parts and uploads new ones, so `as_of` gives back everything that was deleted since
+that day but shows the current content of anything modified since. Real versioning needs the parts
+of several versions of one path to coexist, which the `(job_id, rel_path)` unique constraint forbids
+and a `file_versions` table would have to carry. Deliberately not done: the interface says so where
+the date is picked.
+
 **Channel check and index rebuild** (`maintenance.py`): the two directions of the same relationship.
 The check goes from the index to the channel, asks for every recorded message and reports the ones
 gone or carrying a document of the wrong size; with `repair` the damaged files go to `stale`, which
@@ -228,6 +287,19 @@ tasks with their progress in memory, because on a large channel they take minute
 nothing worth keeping across a restart: running them again repeats the same work. Neither may run
 while a sync job is uploading to that channel, since they change the index that job is writing; a
 check that only reports is always allowed.
+
+**Scheduled maintenance** (`scheduled_check` in `maintenance.py`, `_check_channels` in the
+scheduler): the check the user had to remember to press, run by the installation instead. Per
+channel, every N days at a local hour, 0 days off. It obeys the rules the manual endpoint already
+enforces, never two tasks on one channel and never a repair while a sync job writes the index that
+repair would change, except that instead of refusing it drops the repair and reports anyway: an
+unattended check must not skip a month because a job happened to be running. The outcome goes on the
+channel row, `last_check_at` and `last_check_result` as JSON, and not into the in-memory registry,
+which keeps twenty tasks and forgets them at every restart while a monthly check has to be readable
+the month after. The report is a failure only when something is broken, so `errors` mode stays quiet
+on a healthy channel and `all` mode gets the confirmation. The hourly slot is compared with an hour
+of slack, because demanding the full N days on an hourly tick would push every check one hour later
+than the last and drift a day out within a month.
 
 **The channel cannot give back the mtime**: a message carries name, folder and part number, never a
 date. Entries written by a rebuild get `MTIME_UNKNOWN` (-1) and the first scan of the job adopts the
@@ -244,6 +316,21 @@ first segment after the prefix, with the count and the bytes of the whole subtre
 is one row: the split belongs to the transport. Search reuses those same rows instead of a second
 query: it keeps a match at any depth below the current folder, files by name and folders by their own
 name, which is why it costs the same as the listing it replaces.
+
+**A folder is restored as one operation** (`restore_folder` in `sync/restore.py`): the same machinery
+with more than one file in the list, and not a hundred restores started by the browser. The
+destination is prepared once, so a wrong path is an error on the button; a file that fails increments
+a counter and the folder carries on, because the alternative is a restore of 4,000 files that stops
+on the third; the progress is one bar with a file count and a current path; and the whole thing can
+be stopped, which a folder measured in terabytes has to be. The files are the ones the explorer would
+list at that path, the trash included, and each keeps its path **relative to the chosen folder**, so
+`Photos/2024` restored into `/mnt/restored` gives `/mnt/restored/january/...` and not the original
+tree repeated underneath. The account transfer semaphore is taken **per file** and not around the
+batch: holding the connection budget for the hours a folder takes would leave every job of that
+account in `waiting` for all of it. The same change gave the single-file restore the budget division
+it never had, `MAX_CONNECTIONS // max_concurrent_jobs` instead of the whole ceiling. Finished restores
+are forgotten by the hub after `RESTORE_LINGER` (5 minutes), long enough to see how it went and short
+enough that the panel is not a log.
 
 The destination of a download is chosen in a dialog: the browser, a folder on the server or an rclone
 remote. The last two go through `restore_file`, which now builds a `LocalDestination` or an
@@ -265,6 +352,20 @@ rather than columns of their own, which is why they needed no migration. Off, er
 run, and a failure to send is a line in the log: a notification must never be able to break a job.
 Nothing is sent when the process is shutting down, or every deploy would produce a message per
 running job.
+
+**Silence alarm** (`_check_silence` in `sync/scheduler.py`): a job that stops succeeding says
+nothing on its own. A failed run sends a report, but a job disabled by mistake, or one whose window
+never opens, produces no event at all, and the absence of a message is not something anybody
+notices. The watcher is a second scheduler loop on an hourly tick, deliberately apart from the 10 s
+one, which has to stay cheap. The threshold adapts: the longer of the configured days and **twice
+the interval of the job**, because three days mean nothing to a monthly job and are an eternity for
+an hourly one. The reference is the last `ok` run read from `job_runs` / `download_runs`, not a
+column, since the runs table already holds the truth; a job that never succeeded is counted from its
+creation, so one that has been broken since the day it was made is reported too. Disabled jobs are
+included, that being the case the feature exists for, and the escape hatch is `silence_alerts` on the
+job. `silence_alerted_at` stops it repeating: another whole threshold has to pass before the same job
+speaks again, and a run that ends `idle` clears it. The alarm is sent as a failure so the `errors`
+notification mode delivers it, which is the mode of somebody who only wants to hear about problems.
 
 **A download job deletes nothing**: a sync job deletes from the channel what disappeared from the
 source, because the channel is a copy this application owns. The destination of a download job holds

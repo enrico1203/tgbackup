@@ -5,10 +5,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .models import SCHEDULE_ALWAYS
 
-# The weekly window, 168 hours of "0" and "1". Validated here rather than in the job
-# forms so a wrong length is a 422 with the field named, not a schedule silently read
-# as always open.
-SCHEDULE_PATTERN = r"^[01]{168}$"
+# The weekly window, 168 hours: "0" closed, "1" open, "2" open but limited to the
+# bandwidth set on the job. Validated here rather than in the job forms so a wrong length
+# is a 422 with the field named, not a schedule silently read as always open.
+SCHEDULE_PATTERN = r"^[012]{168}$"
 
 
 class Model(BaseModel):
@@ -104,6 +104,19 @@ class ChannelOut(Model):
     kind: str
     participants: int | None
     last_seen_at: datetime
+    # Automatic integrity check. 0 days is off, and the hour is local to the timezone of
+    # the installation.
+    check_interval_days: int = 0
+    check_hour: int = 4
+    check_repair: bool = False
+    last_check_at: datetime | None = None
+    last_check_result: str | None = None
+
+
+class CheckScheduleIn(BaseModel):
+    check_interval_days: int = Field(default=0, ge=0, le=365)
+    check_hour: int = Field(default=4, ge=0, le=23)
+    check_repair: bool = False
 
 
 # Sync job
@@ -124,6 +137,11 @@ class JobIn(BaseModel):
     max_file_size: int = Field(default=0, ge=0)
     schedule_hours: str = Field(default=SCHEDULE_ALWAYS, pattern=SCHEDULE_PATTERN)
     stop_outside_window: bool = False
+    throttle_bps: int = Field(default=0, ge=0)
+    delete_guard_percent: int = Field(default=20, ge=0, le=100)
+    delete_guard_files: int = Field(default=0, ge=0)
+    trash_days: int = Field(default=0, ge=0, le=3650)
+    silence_alerts: bool = True
     enabled: bool = True
 
 
@@ -141,6 +159,11 @@ class JobUpdate(BaseModel):
     max_file_size: int | None = Field(default=None, ge=0)
     schedule_hours: str | None = Field(default=None, pattern=SCHEDULE_PATTERN)
     stop_outside_window: bool | None = None
+    throttle_bps: int | None = Field(default=None, ge=0)
+    delete_guard_percent: int | None = Field(default=None, ge=0, le=100)
+    delete_guard_files: int | None = Field(default=None, ge=0)
+    trash_days: int | None = Field(default=None, ge=0, le=3650)
+    silence_alerts: bool | None = None
     enabled: bool | None = None
 
 
@@ -149,8 +172,10 @@ class JobStats(BaseModel):
     files_uploaded: int = 0
     files_pending: int = 0
     files_error: int = 0
+    files_trashed: int = 0
     bytes_total: int = 0
     bytes_uploaded: int = 0
+    bytes_trashed: int = 0
 
 
 class JobOut(Model):
@@ -169,6 +194,13 @@ class JobOut(Model):
     max_file_size: int
     schedule_hours: str
     stop_outside_window: bool
+    throttle_bps: int
+    delete_guard_percent: int
+    delete_guard_files: int
+    delete_guard_bypass: bool
+    trash_days: int
+    silence_alerts: bool
+    silence_alerted_at: datetime | None
     enabled: bool
     status: str
     phase: str | None
@@ -200,6 +232,8 @@ class JobRunOut(Model):
     added: int
     modified: int
     removed: int
+    trashed: int
+    revived: int
     uploaded_files: int
     uploaded_bytes: int
     error: str | None
@@ -218,6 +252,8 @@ class DownloadJobIn(BaseModel):
     interval_hours: float = Field(gt=0, le=24 * 365)
     schedule_hours: str = Field(default=SCHEDULE_ALWAYS, pattern=SCHEDULE_PATTERN)
     stop_outside_window: bool = False
+    throttle_bps: int = Field(default=0, ge=0)
+    silence_alerts: bool = True
     enabled: bool = True
 
 
@@ -230,6 +266,8 @@ class DownloadJobUpdate(BaseModel):
     interval_hours: float | None = Field(default=None, gt=0, le=24 * 365)
     schedule_hours: str | None = Field(default=None, pattern=SCHEDULE_PATTERN)
     stop_outside_window: bool | None = None
+    throttle_bps: int | None = Field(default=None, ge=0)
+    silence_alerts: bool | None = None
     enabled: bool | None = None
 
 
@@ -257,6 +295,9 @@ class DownloadJobOut(Model):
     interval_hours: float
     schedule_hours: str
     stop_outside_window: bool
+    throttle_bps: int
+    silence_alerts: bool
+    silence_alerted_at: datetime | None
     enabled: bool
     status: str
     phase: str | None
@@ -339,6 +380,10 @@ class ExplorerFile(BaseModel):
     # hold it, kept because it explains why a large download takes a while to start.
     parts: int
     uploaded_at: datetime | None
+    # Set only on a file that is no longer at the source: when it went into the trash and
+    # the day its messages are deleted for good. Both null in an ordinary listing.
+    trashed_at: datetime | None = None
+    purge_at: datetime | None = None
     job_id: int
 
 
@@ -369,6 +414,16 @@ class ExplorerFetchIn(BaseModel):
     path: str = Field(min_length=1)
 
 
+class ExplorerFetchFolderIn(BaseModel):
+    channel_id: int
+    # The folder inside the channel, empty for the whole channel.
+    path: str = ""
+    dest_type: Literal["local", "rclone"]
+    # Where it lands. Named apart from `path` because both are paths and confusing the
+    # two would write the channel into itself.
+    path_to: str = Field(min_length=1)
+
+
 class DownloadTicketIn(BaseModel):
     file_id: int
 
@@ -385,6 +440,15 @@ class DownloadTicketOut(BaseModel):
 
 class RestoreIn(BaseModel):
     file_id: int
+
+
+class RestoreFolderOut(BaseModel):
+    restore_id: str
+    target_path: str
+    # What was actually queued, which is what the interface reports back: the folder may
+    # hold files the index has no parts for, and those are skipped.
+    files: int
+    bytes: int
 
 
 class RestoreOut(BaseModel):
@@ -493,14 +557,26 @@ class ImportResultOut(BaseModel):
 
 
 class NotifyPreferencesIn(BaseModel):
+    # Days without a successful run after which a job is reported. 0 turns it off.
+    silence_days: int = Field(default=3, ge=0, le=365)
     events: Literal["off", "errors", "all"]
     # 0 means the report travels through the account of the job that ran.
     account_id: int = Field(default=0, ge=0)
 
 
 class NotifyPreferencesOut(BaseModel):
+    silence_days: int = 3
     events: str
     account_id: int
+
+
+class BandwidthPreferencesIn(BaseModel):
+    # Bytes per second for the whole installation, 0 for no limit.
+    rate_limit_bps: int = Field(default=0, ge=0)
+
+
+class BandwidthPreferencesOut(BaseModel):
+    rate_limit_bps: int
 
 
 class SchedulePreferencesIn(BaseModel):

@@ -20,7 +20,9 @@ async def _stats(session, job_id: int) -> JobStats:
     uploaded_flag = case((FileEntry.state == "uploaded", 1), else_=0)
     pending_flag = case((FileEntry.state.in_(("pending", "uploading", "stale")), 1), else_=0)
     error_flag = case((FileEntry.state == "error", 1), else_=0)
+    trashed_flag = case((FileEntry.state == "trashed", 1), else_=0)
     uploaded_size = case((FileEntry.state == "uploaded", FileEntry.size), else_=0)
+    trashed_size = case((FileEntry.state == "trashed", FileEntry.size), else_=0)
 
     row = await session.execute(
         select(
@@ -30,16 +32,31 @@ async def _stats(session, job_id: int) -> JobStats:
             func.coalesce(func.sum(uploaded_size), 0),
             func.coalesce(func.sum(pending_flag), 0),
             func.coalesce(func.sum(error_flag), 0),
+            func.coalesce(func.sum(trashed_flag), 0),
+            func.coalesce(func.sum(trashed_size), 0),
         ).where(FileEntry.job_id == job_id)
     )
-    total, bytes_total, uploaded, bytes_uploaded, pending, errors = row.one()
+    (
+        total,
+        bytes_total,
+        uploaded,
+        bytes_uploaded,
+        pending,
+        errors,
+        trashed,
+        bytes_trashed,
+    ) = row.one()
     return JobStats(
         files_total=total or 0,
         files_uploaded=uploaded or 0,
         files_pending=pending or 0,
         files_error=errors or 0,
+        # Still in the channel, no longer at the source: they are what the trash is
+        # holding and what a restore to an earlier day would find.
+        files_trashed=trashed or 0,
         bytes_total=bytes_total or 0,
         bytes_uploaded=bytes_uploaded or 0,
+        bytes_trashed=bytes_trashed or 0,
     )
 
 
@@ -155,6 +172,11 @@ async def create_job(payload: JobIn, session: SessionDep, _: ActiveUserDep) -> J
         max_file_size=payload.max_file_size,
         schedule_hours=payload.schedule_hours,
         stop_outside_window=payload.stop_outside_window,
+        throttle_bps=payload.throttle_bps,
+        silence_alerts=payload.silence_alerts,
+        delete_guard_percent=payload.delete_guard_percent,
+        delete_guard_files=payload.delete_guard_files,
+        trash_days=payload.trash_days,
         enabled=payload.enabled,
     )
     session.add(job)
@@ -213,6 +235,23 @@ async def run_job(job_id: int, session: SessionDep, _: ActiveUserDep) -> JobOut:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
     if not await scheduler.trigger(SYNC, job_id):
         raise HTTPException(status.HTTP_409_CONFLICT, "The job is already running")
+    await session.refresh(job)
+    return await _to_out(session, job)
+
+
+@router.post("/{job_id}/allow-deletions", response_model=JobOut)
+async def allow_deletions(job_id: int, session: SessionDep, _: ActiveUserDep) -> JobOut:
+    """Lets the next run of this job go through with the deletions the guard stopped.
+
+    Deliberately not part of the ordinary update: this is an acknowledgement of something
+    the user has read, it lasts one run, and the run itself clears it. Editing the limits
+    is the other answer, and that one goes through PATCH like everything else.
+    """
+    job = await session.get(SyncJob, job_id)
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
+    job.delete_guard_bypass = True
+    await session.commit()
     await session.refresh(job)
     return await _to_out(session, job)
 

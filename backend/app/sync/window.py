@@ -6,9 +6,12 @@ moment: if it falls outside, the job waits for the opening instead of skipping a
 interval. Two jobs sharing a window do not queue behind each other either, the account
 semaphore is still what serializes the transfers.
 
-The window is 168 characters, one per hour, Monday 00:00 first and Sunday 23:00 last,
-"1" open and "0" closed. A string rather than a table of rows because it is always read
-whole, never queried, and 168 bytes on a job row cost nothing.
+The window is 168 characters, one per hour, Monday 00:00 first and Sunday 23:00 last:
+"0" closed, "1" open, "2" open but limited to the bandwidth set on the job. A string
+rather than a table of rows because it is always read whole, never queried, and 168 bytes
+on a job row cost nothing. The third state is there because "do not run during the day"
+and "run during the day, slowly" are the same question asked twice, and a second grid for
+the second one would have been a second thing to keep in step with the first.
 
 The hours are local hours: "not between 8 and 18" means nothing in UTC to somebody who
 lives at UTC+2. The timezone is one value for the installation, kept in `settings` like
@@ -21,7 +24,9 @@ skips or repeats a run.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from time import monotonic
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
@@ -32,19 +37,26 @@ log = logging.getLogger(__name__)
 
 HOURS = 168
 ALWAYS = SCHEDULE_ALWAYS
+
+# The three states of an hour. Throttled counts as open everywhere the question is
+# whether the job may run: it changes the speed, not the permission.
+CLOSED = "0"
+FREE = "1"
+THROTTLED = "2"
+OPEN = (FREE, THROTTLED)
 TIMEZONE_KEY = "schedule_timezone"
 DEFAULT_TIMEZONE = "UTC"
 
 
 def normalise(spec: str | None) -> str:
-    """Brings any stored value back to 168 characters of 0 and 1.
+    """Brings any stored value back to 168 characters of 0, 1 and 2.
 
     Anything unreadable becomes an open window: a schedule that cannot be parsed must
     never be the reason a backup stops running.
     """
     if not spec:
         return ALWAYS
-    cleaned = "".join("1" if char == "1" else "0" for char in spec.strip())
+    cleaned = "".join(char if char in "12" else "0" for char in spec.strip())
     if len(cleaned) != HOURS:
         return ALWAYS
     return cleaned
@@ -68,7 +80,13 @@ def _slot(moment: datetime, zone: ZoneInfo) -> int:
 
 
 def is_open(spec: str | None, zone: ZoneInfo, moment: datetime) -> bool:
-    return normalise(spec)[_slot(moment, zone)] == "1"
+    """Whether the job may run. A throttled hour is an open hour that goes slower."""
+    return normalise(spec)[_slot(moment, zone)] in OPEN
+
+
+def is_throttled(spec: str | None, zone: ZoneInfo, moment: datetime) -> bool:
+    """Whether this hour is one of the ones the job has to go slowly through."""
+    return normalise(spec)[_slot(moment, zone)] == THROTTLED
 
 
 def next_opening(spec: str | None, zone: ZoneInfo, after: datetime) -> datetime | None:
@@ -78,12 +96,12 @@ def next_opening(spec: str | None, zone: ZoneInfo, after: datetime) -> datetime 
     run: the interface says so rather than the scheduler pretending to schedule it.
     """
     schedule = normalise(spec)
-    if "1" not in schedule:
+    if not any(char in OPEN for char in schedule):
         return None
     start = after.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
     for step in range(HOURS + 1):
         moment = start + timedelta(hours=step)
-        if schedule[_slot(moment, zone)] == "1":
+        if schedule[_slot(moment, zone)] in OPEN:
             return after if step == 0 else moment
     return None
 
@@ -99,6 +117,42 @@ def closes_at(spec: str | None, zone: ZoneInfo, moment: datetime) -> datetime | 
         if schedule[_slot(boundary, zone)] == "0":
             return boundary
     return None
+
+
+def rate_provider(throttle_bps: int, spec: str | None, zone: ZoneInfo) -> Callable[[], float]:
+    """How many bytes per second this job may move right now, 0 for no limit.
+
+    The function is handed to a `RateLimiter` and called as the bucket refills, which is
+    what makes the limit follow the clock: a run started at night keeps going into the
+    morning and slows down when it gets there, with nothing to restart.
+
+    A job with a ceiling and no hour marked throttled is limited at every hour. Marking
+    hours is how you say "only then", and marking none is the simple case, "this job never
+    goes faster than this".
+    """
+    if throttle_bps <= 0:
+        return lambda: 0.0
+
+    schedule = normalise(spec)
+    if THROTTLED not in schedule:
+        return lambda: float(throttle_bps)
+
+    # The answer only changes on the hour, and it is asked once per chunk, which at full
+    # speed is forty times a second. A second of memory costs nothing and saves the
+    # timezone arithmetic.
+    checked_at = 0.0
+    current = 0.0
+
+    def rate() -> float:
+        nonlocal checked_at, current
+        now = monotonic()
+        if now - checked_at >= 1.0:
+            checked_at = now
+            slot = schedule[_slot(datetime.now(UTC), zone)]
+            current = float(throttle_bps) if slot == THROTTLED else 0.0
+        return current
+
+    return rate
 
 
 async def load_timezone(session) -> str:

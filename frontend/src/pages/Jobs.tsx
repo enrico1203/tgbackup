@@ -2,15 +2,18 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router";
 import {
+  BellOff,
   CalendarClock,
   CloudUpload,
   Filter,
   FolderOpen,
   FolderSearch,
+  Gauge,
   HardDrive,
   Pencil,
   Play,
   Plus,
+  ShieldAlert,
   Square,
   Trash2,
 } from "lucide-react";
@@ -35,6 +38,7 @@ import {
 } from "../components/ui";
 
 const GIGA = 1_000_000_000;
+const MEGA = 1_000_000;
 
 function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
   const queryClient = useQueryClient();
@@ -64,6 +68,13 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
   );
   const [scheduleHours, setScheduleHours] = useState(job?.schedule_hours ?? ALWAYS);
   const [stopOutsideWindow, setStopOutsideWindow] = useState(job?.stop_outside_window ?? false);
+  const [throttle, setThrottle] = useState(
+    job?.throttle_bps ? String(job.throttle_bps / MEGA) : "",
+  );
+  const [guardPercent, setGuardPercent] = useState(String(job?.delete_guard_percent ?? 20));
+  const [guardFiles, setGuardFiles] = useState(String(job?.delete_guard_files ?? 0));
+  const [trashDays, setTrashDays] = useState(String(job?.trash_days ?? 0));
+  const [silenceAlerts, setSilenceAlerts] = useState(job?.silence_alerts ?? true);
   const [enabled, setEnabled] = useState(job?.enabled ?? true);
 
   const { data: channels } = useQuery({
@@ -102,6 +113,11 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
         max_file_size: maxFileSize ? Math.round(Number(maxFileSize) * GIGA) : 0,
         schedule_hours: scheduleHours,
         stop_outside_window: stopOutsideWindow,
+        throttle_bps: throttle ? Math.round(Number(throttle) * MEGA) : 0,
+        delete_guard_percent: Number(guardPercent) || 0,
+        delete_guard_files: Number(guardFiles) || 0,
+        trash_days: Number(trashDays) || 0,
+        silence_alerts: silenceAlerts,
         enabled,
       };
       if (job) {
@@ -371,11 +387,91 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
         </label>
       ) : null}
 
-      {scheduleHours.includes("1") ? null : (
+      {scheduleHours.includes("1") || scheduleHours.includes("2") ? null : (
         <Alert tone="info">
           Every hour is closed: the job will only ever run when you press Run now.
         </Alert>
       )}
+
+      <Field
+        label="Speed limit (MB/s)"
+        hint={
+          scheduleHours.includes("2")
+            ? "Applied in the hours painted as limited. The rest of the week the job goes as fast as it can."
+            : "Applied at every hour, since no hour is painted as limited. Empty or zero means no limit."
+        }
+      >
+        <input
+          value={throttle}
+          onChange={(e) => setThrottle(e.target.value.replace(/[^\d.]/g, ""))}
+          inputMode="decimal"
+          placeholder="0"
+        />
+      </Field>
+
+      {scheduleHours.includes("2") && !Number(throttle) ? (
+        <Alert tone="info">
+          Hours are painted as limited but no speed is set, so they behave as ordinary
+          open hours.
+        </Alert>
+      ) : null}
+
+      <div className="grid-2">
+        <Field
+          label="Stop the run if more than this share disappears (%)"
+          hint="A source that fails to mount looks like a source where everything was deleted. Zero turns the check off. Not applied to jobs holding fewer than ten files."
+        >
+          <input
+            value={guardPercent}
+            onChange={(e) => setGuardPercent(e.target.value.replace(/\D/g, "").slice(0, 3))}
+            inputMode="numeric"
+            placeholder="20"
+          />
+        </Field>
+
+        <Field
+          label="...or more than this many files"
+          hint="An absolute ceiling, checked whatever the size of the job. Zero turns it off."
+        >
+          <input
+            value={guardFiles}
+            onChange={(e) => setGuardFiles(e.target.value.replace(/\D/g, ""))}
+            inputMode="numeric"
+            placeholder="0"
+          />
+        </Field>
+      </div>
+
+      <Field
+        label="Keep deleted files in the channel for (days)"
+        hint="A file that disappears from the source goes to the trash instead of being deleted: it stays downloadable, it comes back for free if it returns to the source unchanged, and only then are its messages deleted. Zero deletes straight away. Telegram charges nothing for the space."
+      >
+        <input
+          value={trashDays}
+          onChange={(e) => setTrashDays(e.target.value.replace(/\D/g, "").slice(0, 4))}
+          inputMode="numeric"
+          placeholder="0"
+        />
+      </Field>
+
+      {Number(guardPercent) === 0 && Number(guardFiles) === 0 ? (
+        <Alert tone="info">
+          No limit on deletions: if the source becomes unreachable while still looking
+          like an empty folder, the next run empties the channel message by message.
+        </Alert>
+      ) : null}
+
+      <label className="switch">
+        <input
+          type="checkbox"
+          checked={silenceAlerts}
+          onChange={(e) => setSilenceAlerts(e.target.checked)}
+        />
+        <span>
+          Warn me if this job stops finishing runs. Turn it off for a job meant to sit
+          idle, or it will report itself.
+        </span>
+      </label>
 
       <label className="switch">
         <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
@@ -405,9 +501,16 @@ function JobCard({ job, onEdit }: { job: Job; onEdit: (job: Job) => void }) {
   const start = useMutation({ mutationFn: () => api.post(`/api/jobs/${job.id}/run`), onSuccess: invalidate });
   const stop = useMutation({ mutationFn: () => api.post(`/api/jobs/${job.id}/stop`), onSuccess: invalidate });
   const remove = useMutation({ mutationFn: () => api.del(`/api/jobs/${job.id}`), onSuccess: invalidate });
+  const allow = useMutation({
+    mutationFn: () => api.post(`/api/jobs/${job.id}/allow-deletions`),
+    onSuccess: invalidate,
+  });
 
   const running = job.status === "running";
   const failed = job.status === "error";
+  // The one error whose right answer is sometimes "yes, go ahead": the run stopped
+  // because it was about to delete more than the job allows.
+  const guardTripped = failed && (job.last_error ?? "").startsWith("Deletion guard");
 
   return (
     <Card>
@@ -427,6 +530,13 @@ function JobCard({ job, onEdit }: { job: Job; onEdit: (job: Job) => void }) {
           ) : (
             <Pill tone="warn">Disabled</Pill>
           )}
+
+          {job.silence_alerted_at && job.status !== "running" ? (
+            <Pill tone="warn">
+              <BellOff size={11} />
+              Reported as silent
+            </Pill>
+          ) : null}
 
           {running ? (
             <button type="button" className="btn ghost small" onClick={() => stop.mutate()}>
@@ -462,6 +572,41 @@ function JobCard({ job, onEdit }: { job: Job; onEdit: (job: Job) => void }) {
 
       <div className="card-body">
         {job.last_error ? <Alert>{job.last_error}</Alert> : null}
+
+        {guardTripped ? (
+          job.delete_guard_bypass ? (
+            <Alert tone="info">
+              The next run of this job is allowed to go through with those deletions.
+              Press Run now when the source is ready.
+            </Alert>
+          ) : (
+            <div className="row" style={{ gap: 8 }}>
+              <button
+                type="button"
+                className="btn danger small"
+                disabled={running || allow.isPending}
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      "The files the guard stopped will be deleted from the channel on " +
+                        "the next run of this job. This cannot be undone. Continue?",
+                    )
+                  ) {
+                    allow.mutate();
+                  }
+                }}
+              >
+                <ShieldAlert size={13} />
+                Allow this deletion once
+              </button>
+              <span style={{ fontSize: 12, color: "var(--muted)" }}>
+                Only after checking that the source is mounted and points where it should.
+              </span>
+            </div>
+          )
+        ) : null}
+
+        {allow.isError ? <Alert>{(allow.error as Error).message}</Alert> : null}
         {start.isError ? <Alert>{(start.error as Error).message}</Alert> : null}
         {remove.isError ? <Alert>{(remove.error as Error).message}</Alert> : null}
 
@@ -482,6 +627,19 @@ function JobCard({ job, onEdit }: { job: Job; onEdit: (job: Job) => void }) {
             </span>
           ) : null}
           <span>parts of {formatBytes(job.part_size_bytes)}</span>
+          {job.throttle_bps > 0 ? (
+            <span className="row" style={{ gap: 6 }}>
+              <Gauge size={12} />
+              {(job.throttle_bps / MEGA).toFixed(1)} MB/s
+              {job.schedule_hours.includes("2") ? " in the limited hours" : ""}
+            </span>
+          ) : null}
+          {job.trash_days > 0 ? (
+            <span className="row" style={{ gap: 6 }}>
+              <Trash2 size={12} />
+              deleted files kept {job.trash_days} days
+            </span>
+          ) : null}
           {job.exclude_globs || job.include_globs || job.max_file_size ? (
             <span className="row" style={{ gap: 6 }}>
               <Filter size={12} />
@@ -514,6 +672,12 @@ function JobCard({ job, onEdit }: { job: Job; onEdit: (job: Job) => void }) {
                 <span style={{ color: "var(--danger)" }}>
                   {job.stats.files_error.toLocaleString("en-US")} in error
                 </span>
+              ) : null}
+              {job.stats.files_trashed > 0 ? (
+                <Link to={`/explorer?channel=${job.channel_id}&view=trash`}>
+                  {job.stats.files_trashed.toLocaleString("en-US")} in the trash,{" "}
+                  {formatBytes(job.stats.bytes_trashed)}
+                </Link>
               ) : null}
             </div>
           </>

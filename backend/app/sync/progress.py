@@ -20,6 +20,9 @@ log = logging.getLogger(__name__)
 # Damping constant of the exponential moving average of the speed, in seconds.
 SPEED_SMOOTHING = 3.0
 
+# How long a finished restore stays on the panel before the hub forgets it.
+RESTORE_LINGER = 300.0
+
 
 class SpeedMeter:
     """Exponential moving average of the transfer speed.
@@ -194,14 +197,32 @@ class DownloadProgress(SpeedMeter):
 
 @dataclass
 class RestoreProgress(SpeedMeter):
+    """One file being rebuilt, or a whole folder.
+
+    The counters are the same either way: a single file is a batch of one, which is why
+    `files_total` defaults to 1 and the panel can show both without asking which it is.
+    """
+
     restore_id: str
     file_name: str
     target_path: str
     bytes_total: int
     bytes_done: int = 0
+    # running, done, error, cancelled
     phase: str = "running"
     error: str | None = None
     speed_bps: float = 0.0
+
+    files_total: int = 1
+    files_done: int = 0
+    # The path being written right now, relative to the folder that was asked for.
+    current_file: str | None = None
+    # Files that failed without stopping the rest, and the first few reasons.
+    failed: int = 0
+    errors: list[str] = field(default_factory=list)
+    # Monotonic time at which it stopped running, filled in by the hub. Only used to
+    # decide when to forget it.
+    ended_at: float | None = None
 
     _window_bytes: int = 0
     _window_start: float = field(default_factory=time.monotonic)
@@ -216,6 +237,11 @@ class RestoreProgress(SpeedMeter):
             "error": self.error,
             "bytes_total": self.bytes_total,
             "bytes_done": self.bytes_done,
+            "files_total": self.files_total,
+            "files_done": self.files_done,
+            "current_file": self.current_file,
+            "failed": self.failed,
+            "errors": self.errors,
             "speed_bps": round(self.speed_bps, 1),
             "eta_seconds": (
                 remaining / self.speed_bps if self.speed_bps >= 1024 and remaining else None
@@ -253,6 +279,23 @@ class ProgressHub:
         self.restores[restore.restore_id] = restore
         return restore
 
+    def prune_restores(self) -> None:
+        """Forgets restores that ended a while ago.
+
+        They are kept for a few minutes on purpose, so somebody who started one and
+        changed page still finds out how it went. Without a limit the panel would grow
+        for as long as the process lives, and every frame would carry the whole history
+        to every connected browser.
+        """
+        now = time.monotonic()
+        for restore_id, restore in list(self.restores.items()):
+            if restore.phase == "running":
+                continue
+            if restore.ended_at is None:
+                restore.ended_at = now
+            elif now - restore.ended_at > RESTORE_LINGER:
+                self.restores.pop(restore_id, None)
+
     def snapshot(self) -> dict:
         return {
             "type": "progress",
@@ -278,6 +321,7 @@ class ProgressHub:
                 job.tick()
             for restore in self.restores.values():
                 restore.tick()
+            self.prune_restores()
 
             if not self._subscribers:
                 continue

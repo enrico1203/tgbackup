@@ -4,7 +4,7 @@ from sqlalchemy import select
 from .. import maintenance
 from ..deps import ActiveUserDep, SessionDep
 from ..models import Channel, SyncJob
-from ..schemas import CheckIn, MaintenanceTaskOut, RebuildIn
+from ..schemas import ChannelOut, CheckIn, CheckScheduleIn, MaintenanceTaskOut, RebuildIn
 
 router = APIRouter(prefix="/api/maintenance", tags=["maintenance"])
 
@@ -74,6 +74,25 @@ async def rebuild(payload: RebuildIn, session: SessionDep, _: ActiveUserDep) -> 
         )
 
     return maintenance.registry.start("rebuild", channel, run).snapshot()
+
+
+@router.put("/channels/{channel_id}/schedule", response_model=ChannelOut)
+async def set_check_schedule(
+    channel_id: int, payload: CheckScheduleIn, session: SessionDep, _: ActiveUserDep
+) -> Channel:
+    """How often this channel checks itself, and whether it repairs what it finds.
+
+    Repair marks the damaged files for re-upload, which means the next run of the job
+    sends them again: it is the one setting here that spends bandwidth without being
+    asked, and the form says so.
+    """
+    channel = await _channel_or_404(session, channel_id)
+    channel.check_interval_days = payload.check_interval_days
+    channel.check_hour = payload.check_hour
+    channel.check_repair = payload.check_repair
+    await session.commit()
+    await session.refresh(channel)
+    return channel
 
 
 @router.get("/channels/{channel_id}/jobs", response_model=list[dict])

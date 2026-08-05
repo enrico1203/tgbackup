@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Hammer, RefreshCcw, ShieldCheck, Wrench } from "lucide-react";
+import { CalendarClock, Hammer, RefreshCcw, ShieldCheck, Wrench } from "lucide-react";
 
 import { api } from "../lib/api";
 import { formatDateTime, percent } from "../lib/format";
@@ -249,6 +249,140 @@ function RebuildForm({
   );
 }
 
+function AutomaticCheck({ channel }: { channel: Channel }) {
+  const queryClient = useQueryClient();
+  const [days, setDays] = useState<string | null>(null);
+  const [hour, setHour] = useState<number | null>(null);
+  const [repair, setRepair] = useState<boolean | null>(null);
+
+  const save = useMutation({
+    mutationFn: (payload: {
+      check_interval_days: number;
+      check_hour: number;
+      check_repair: boolean;
+    }) => api.put<Channel>(`/api/maintenance/channels/${channel.id}/schedule`, payload),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["channels"] });
+      setDays(null);
+      setHour(null);
+      setRepair(null);
+    },
+  });
+
+  const currentDays = days ?? String(channel.check_interval_days);
+  const currentHour = hour ?? channel.check_hour;
+  const currentRepair = repair ?? channel.check_repair;
+  const dirty =
+    (Number(currentDays) || 0) !== channel.check_interval_days ||
+    currentHour !== channel.check_hour ||
+    currentRepair !== channel.check_repair;
+
+  // The result of the last automatic check, kept on the channel row so it survives a
+  // restart, unlike the task list below.
+  let last: Record<string, unknown> | null = null;
+  try {
+    last = channel.last_check_result ? JSON.parse(channel.last_check_result) : null;
+  } catch {
+    last = null;
+  }
+  const broken = Number(last?.files_broken ?? 0);
+
+  return (
+    <Card>
+      <CardHead title="Check this channel on its own">
+        {channel.check_interval_days > 0 ? (
+          <Pill tone="ok">
+            <CalendarClock size={11} />
+            every {channel.check_interval_days}{" "}
+            {channel.check_interval_days === 1 ? "day" : "days"}
+          </Pill>
+        ) : (
+          <Pill tone="mute">Off</Pill>
+        )}
+      </CardHead>
+
+      <div className="card-body">
+        <p style={{ margin: 0, color: "var(--muted)", maxWidth: "76ch" }}>
+          What distinguishes a backup from a folder of files is that somebody looks at it
+          without being asked. The check runs by itself and reports through the usual
+          notifications: as an error when something is damaged, as an ordinary report
+          otherwise, so the errors-only mode stays quiet on a healthy channel.
+        </p>
+
+        {save.isError ? <Alert>{(save.error as Error).message}</Alert> : null}
+
+        <div className="grid-2">
+          <Field label="Every how many days" hint="Zero turns it off.">
+            <input
+              value={currentDays}
+              onChange={(event) => setDays(event.target.value.replace(/\D/g, ""))}
+              inputMode="numeric"
+              placeholder="0"
+            />
+          </Field>
+
+          <Field label="At this hour" hint="Local hour, in the timezone set in Settings.">
+            <select
+              value={currentHour}
+              onChange={(event) => setHour(Number(event.target.value))}
+            >
+              {Array.from({ length: 24 }, (_, value) => (
+                <option key={value} value={value}>
+                  {String(value).padStart(2, "0")}:00
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+
+        <label className="switch">
+          <input
+            type="checkbox"
+            checked={currentRepair}
+            onChange={(event) => setRepair(event.target.checked)}
+          />
+          <span>
+            Also mark the damaged files, so the job uploads them again. This one spends
+            bandwidth without being asked, and it is skipped while a job is writing to the
+            channel.
+          </span>
+        </label>
+
+        <div className="row">
+          <button
+            type="button"
+            className="btn"
+            disabled={!dirty || save.isPending}
+            onClick={() =>
+              save.mutate({
+                check_interval_days: Number(currentDays) || 0,
+                check_hour: currentHour,
+                check_repair: currentRepair,
+              })
+            }
+          >
+            {save.isPending ? <Spinner /> : null}
+            Save
+          </button>
+        </div>
+
+        {channel.last_check_at ? (
+          <div className="row wrap" style={{ gap: 20, fontSize: 12.5, color: "var(--muted)" }}>
+            <span>last automatic check {formatDateTime(channel.last_check_at)}</span>
+            {last ? (
+              <span style={broken ? { color: "var(--danger)" } : undefined}>
+                {broken
+                  ? `${broken.toLocaleString("en-US")} damaged files`
+                  : `${Number(last.parts_checked ?? 0).toLocaleString("en-US")} parts, all present`}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+    </Card>
+  );
+}
+
 export default function Maintenance() {
   const queryClient = useQueryClient();
   const [accountId, setAccountId] = useState<number | null>(null);
@@ -282,6 +416,8 @@ export default function Maintenance() {
     refetchInterval: (query) =>
       (query.state.data ?? []).some((task) => task.phase === "running") ? 2000 : 10000,
   });
+
+  const selectedChannel = (channels ?? []).find((item) => item.id === channelId) ?? null;
 
   const check = useMutation({
     mutationFn: () =>
@@ -395,6 +531,8 @@ export default function Maintenance() {
           </span>
         </div>
       </Card>
+
+      {selectedChannel ? <AutomaticCheck channel={selectedChannel} /> : null}
 
       {!tasks || tasks.length === 0 ? (
         <Card>

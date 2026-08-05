@@ -45,6 +45,11 @@ export interface Channel {
   kind: string;
   participants: number | null;
   last_seen_at: string;
+  check_interval_days: number;
+  check_hour: number;
+  check_repair: boolean;
+  last_check_at: string | null;
+  last_check_result: string | null;
 }
 
 export interface JobStats {
@@ -52,8 +57,10 @@ export interface JobStats {
   files_uploaded: number;
   files_pending: number;
   files_error: number;
+  files_trashed: number;
   bytes_total: number;
   bytes_uploaded: number;
+  bytes_trashed: number;
 }
 
 export interface Job {
@@ -72,6 +79,13 @@ export interface Job {
   max_file_size: number;
   schedule_hours: string;
   stop_outside_window: boolean;
+  throttle_bps: number;
+  delete_guard_percent: number;
+  delete_guard_files: number;
+  delete_guard_bypass: boolean;
+  trash_days: number;
+  silence_alerts: boolean;
+  silence_alerted_at: string | null;
   enabled: boolean;
   status: string;
   phase: string | null;
@@ -98,6 +112,8 @@ export interface JobRun {
   added: number;
   modified: number;
   removed: number;
+  trashed: number;
+  revived: number;
   uploaded_files: number;
   uploaded_bytes: number;
   error: string | null;
@@ -123,6 +139,9 @@ export interface DownloadJob {
   interval_hours: number;
   schedule_hours: string;
   stop_outside_window: boolean;
+  throttle_bps: number;
+  silence_alerts: boolean;
+  silence_alerted_at: string | null;
   enabled: boolean;
   status: string;
   phase: string | null;
@@ -194,6 +213,8 @@ export interface ExplorerFile {
   size: number;
   parts: number;
   uploaded_at: string | null;
+  trashed_at: string | null;
+  purge_at: string | null;
   job_id: number;
 }
 
@@ -245,6 +266,13 @@ export interface RemotePreview {
 export interface RestoreOut {
   restore_id: string;
   target_path: string;
+}
+
+export interface RestoreFolderOut {
+  restore_id: string;
+  target_path: string;
+  files: number;
+  bytes: number;
 }
 
 export interface ExportChannel {
@@ -303,6 +331,11 @@ export interface ImportResult {
 export interface NotifyPreferences {
   events: "off" | "errors" | "all";
   account_id: number;
+  silence_days: number;
+}
+
+export interface BandwidthPreferences {
+  rate_limit_bps: number;
 }
 
 export interface SchedulePreferences {
@@ -393,6 +426,11 @@ export interface RestoreProgress {
   error: string | null;
   bytes_total: number;
   bytes_done: number;
+  files_total: number;
+  files_done: number;
+  current_file: string | null;
+  failed: number;
+  errors: string[];
   speed_bps: number;
   eta_seconds: number | null;
 }

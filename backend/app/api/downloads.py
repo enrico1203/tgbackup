@@ -173,6 +173,8 @@ async def create_download(
         interval_hours=payload.interval_hours,
         schedule_hours=payload.schedule_hours,
         stop_outside_window=payload.stop_outside_window,
+        throttle_bps=payload.throttle_bps,
+        silence_alerts=payload.silence_alerts,
         enabled=payload.enabled,
     )
     session.add(job)

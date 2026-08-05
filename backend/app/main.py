@@ -61,6 +61,10 @@ async def lifespan(_: FastAPI):
     # rclone wants a file: it is rewritten from the encrypted copy in the database at every start.
     async with SessionLocal() as session:
         await rclone.sync_config_to_disk(session)
+        # The installation bandwidth limit is a module level value, read here once and
+        # rewritten when it is saved: it is consulted tens of times a second and cannot
+        # be a query.
+        await preferences.load_rate_limit(session)
 
     hub.start()
     await manager.restore_sessions()

@@ -25,6 +25,17 @@ def utcnow() -> datetime:
 # See sync/window.py.
 SCHEDULE_ALWAYS = "1" * 168
 
+# Below this many known files the percentage guard is not applied: on a job holding eight
+# files, deleting three is 37% and means nothing, while the same proportion on a job of
+# thousands is the signature of a source that is not there. The absolute limit, when the
+# user sets one, is checked at every size.
+GUARD_MIN_ENTRIES = 10
+
+# The states in which an entry still has its messages in the channel, and can therefore be
+# downloaded or restored. A trashed file is one the source no longer has: it is exactly
+# what somebody comes looking for, so it stays readable until the retention purges it.
+READABLE_STATES = ("uploaded", "trashed")
+
 # An entry rebuilt by reading the channel has no date: the caption of a message carries the
 # name, the folder and the part number, never the modification time. This value marks that
 # absence, and the first scan of the job adopts the date of the source instead of taking
@@ -95,6 +106,19 @@ class Channel(Base):
     participants: Mapped[int | None] = mapped_column(Integer)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
+    # Automatic integrity check. Every this many days, at this local hour, the index of
+    # the channel is compared with the messages; 0 days is off. `check_repair` marks the
+    # damaged files for re-upload, which is the one setting here that spends bandwidth
+    # without being asked. The outcome is kept on the row rather than in the in-memory
+    # task registry, which holds twenty tasks and forgets them at every restart: a check
+    # that runs once a month has to be readable a month later.
+    # See sync/scheduler.py, _check_channels.
+    check_interval_days: Mapped[int] = mapped_column(Integer, default=0)
+    check_hour: Mapped[int] = mapped_column(Integer, default=4)
+    check_repair: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_check_result: Mapped[str | None] = mapped_column(Text)
+
     account: Mapped[TelegramAccount] = relationship(back_populates="channels")
 
 
@@ -128,6 +152,33 @@ class SyncJob(Base):
     # stop when the window closes instead of going through to the end.
     schedule_hours: Mapped[str] = mapped_column(Text, default=SCHEDULE_ALWAYS)
     stop_outside_window: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # Bytes per second this job may move, 0 for no limit. It applies in the hours marked
+    # "2" in the window, or at every hour when none is. See telegram/throttle.py.
+    throttle_bps: Mapped[int] = mapped_column(BigInteger, default=0)
+
+    # How much of the backup a single run is allowed to delete. A source that fails to
+    # mount lists nothing, and without these the diff would take every known file for
+    # removed and empty the channel message by message. 0 turns a limit off, and the
+    # percentage is not applied to a job holding fewer than GUARD_MIN_ENTRIES files.
+    # See sync/runner.py, _diff.
+    delete_guard_percent: Mapped[int] = mapped_column(Integer, default=20)
+    delete_guard_files: Mapped[int] = mapped_column(Integer, default=0)
+    # Set by the user after reading what the guard stopped, and consumed by the next run:
+    # an acknowledgement is worth exactly one execution.
+    delete_guard_bypass: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # How many days a file that disappeared from the source is kept in the channel before
+    # its messages are deleted. 0 is the historical behaviour, deletion within the run
+    # that noticed. See sync/runner.py, _purge_trash.
+    trash_days: Mapped[int] = mapped_column(Integer, default=0)
+
+    # A job that stops succeeding says nothing on its own: nobody notices a backup that
+    # is not happening. `silence_alerted_at` is when the last alarm went out, cleared by
+    # a run that succeeds, and the switch is for a job deliberately parked.
+    # See sync/scheduler.py, _check_silence.
+    silence_alerts: Mapped[bool] = mapped_column(Boolean, default=True)
+    silence_alerted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # idle, running, error
@@ -171,6 +222,12 @@ class DownloadJob(Base):
     # nothing about when the line is free.
     schedule_hours: Mapped[str] = mapped_column(Text, default=SCHEDULE_ALWAYS)
     stop_outside_window: Mapped[bool] = mapped_column(Boolean, default=False)
+    throttle_bps: Mapped[int] = mapped_column(BigInteger, default=0)
+
+    # Same alarm a sync job has: a channel that stops being poured back is as quiet as a
+    # folder that stops being backed up.
+    silence_alerts: Mapped[bool] = mapped_column(Boolean, default=True)
+    silence_alerted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # idle, running, error
@@ -222,12 +279,16 @@ class FileEntry(Base):
     size: Mapped[int] = mapped_column(BigInteger)
     mtime_ns: Mapped[int] = mapped_column(BigInteger)
 
-    # pending, uploading, uploaded, stale, to_delete, error
+    # pending, uploading, uploaded, stale, trashed, to_delete, error
     state: Mapped[str] = mapped_column(String(16), default="pending")
     parts_total: Mapped[int] = mapped_column(Integer, default=1)
     error: Mapped[str | None] = mapped_column(Text)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     uploaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # When the file stopped being at the source. Set on the way into `trashed` and cleared
+    # if the file comes back, and it is what the retention is counted from. A row carrying
+    # it still owns its parts: the messages are in the channel until the purge.
+    trashed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     parts: Mapped[list[FilePart]] = relationship(
         back_populates="file", cascade="all, delete-orphan", order_by="FilePart.part_index"
@@ -273,7 +334,13 @@ class JobRun(Base):
     scanned: Mapped[int] = mapped_column(Integer, default=0)
     added: Mapped[int] = mapped_column(Integer, default=0)
     modified: Mapped[int] = mapped_column(Integer, default=0)
+    # Deleted from the channel during this run, whether they had been in the trash or
+    # went straight out because the job keeps none.
     removed: Mapped[int] = mapped_column(Integer, default=0)
+    # Moved to the trash by this run, and brought back out of it because they reappeared
+    # at the source with the same size and date, which costs no upload at all.
+    trashed: Mapped[int] = mapped_column(Integer, default=0)
+    revived: Mapped[int] = mapped_column(Integer, default=0)
     uploaded_files: Mapped[int] = mapped_column(Integer, default=0)
     uploaded_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     error: Mapped[str | None] = mapped_column(Text)

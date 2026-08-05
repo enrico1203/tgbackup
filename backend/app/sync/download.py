@@ -33,6 +33,8 @@ from ..db import SessionLocal
 from ..models import Channel, DownloadJob, DownloadRun, FileEntry, SyncJob, TelegramAccount, utcnow
 from ..telegram.fast_transfer import MAX_CONNECTIONS, download_document, stream_document
 from ..telegram.manager import manager
+from ..telegram.throttle import limiter_for
+from . import window
 from .destination import build_destination
 from .progress import hub
 from .runner import JobCancelled, StopSignal
@@ -144,6 +146,13 @@ class DownloadRunner:
             account_id = job.account_id
             channel_id = job.channel_id
 
+            # Same limit a sync job takes, read the same way: the line does not care
+            # which direction the bytes are going.
+            zone = window.load_zone(await window.load_timezone(session))
+            limiter = limiter_for(
+                window.rate_provider(job.throttle_bps, job.schedule_hours, zone)
+            )
+
             account = await session.get(TelegramAccount, job.account_id)
             concurrency = max(1, account.max_concurrent_jobs if account else 2)
             # The ceiling of 20 connections is per data center and is shared with the
@@ -219,7 +228,7 @@ class DownloadRunner:
                 progress.phase = "download"
                 await self._set_phase("download")
                 files, written, failed, last_error = await self._download_all(
-                    client, peer, destination, missing, progress, max_connections
+                    client, peer, destination, missing, progress, max_connections, limiter
                 )
 
             async with SessionLocal() as session:
@@ -273,7 +282,8 @@ class DownloadRunner:
         return await destination.list_files(on_progress=report)
 
     async def _download_all(
-        self, client, entity, destination, missing: list[IndexedFile], progress, max_connections
+        self, client, entity, destination, missing: list[IndexedFile], progress,
+        max_connections, limiter,
     ) -> tuple[int, int, int, str | None]:
         files = 0
         written = 0
@@ -288,7 +298,7 @@ class DownloadRunner:
 
             try:
                 await self._download_one(
-                    client, entity, destination, item, progress, max_connections
+                    client, entity, destination, item, progress, max_connections, limiter
                 )
             except JobCancelled:
                 raise
@@ -306,7 +316,8 @@ class DownloadRunner:
         return files, written, failed, last_error
 
     async def _download_one(
-        self, client, entity, destination, item: IndexedFile, progress, max_connections: int
+        self, client, entity, destination, item: IndexedFile, progress,
+        max_connections: int, limiter,
     ) -> None:
         """Rebuilds one file at the destination from the parts of its message.
 
@@ -332,6 +343,7 @@ class DownloadRunner:
                             on_progress=progress.add_bytes,
                             cancel=self.cancel,
                             max_connections=max_connections,
+                            limiter=limiter,
                         ),
                         item.rel_path,
                         progress,
@@ -349,6 +361,7 @@ class DownloadRunner:
                             on_progress=progress.add_bytes,
                             cancel=self.cancel,
                             max_connections=max_connections,
+                            limiter=limiter,
                         )
                     ) as stream:
                         async for chunk in stream:
@@ -437,6 +450,10 @@ async def execute_download_job(job_id: int, cancel: StopSignal) -> None:
             job.phase = None
             job.last_error = error
             job.last_finished_at = utcnow()
+            if status == "idle":
+                # A run that went through answers the silence alarm, exactly as it does
+                # for a sync job.
+                job.silence_alerted_at = None
             if not interrupted_by_system:
                 # The interval starts from the end of the run, as it does for a sync job.
                 job.next_run_at = datetime.now(UTC) + timedelta(hours=job.interval_hours)

@@ -622,6 +622,43 @@ input::placeholder {
   border-color: var(--accent);
 }
 
+/* Limited hours: the same colour at half strength plus a stripe, so the three states
+   stay apart on a screen where the difference in shade alone would not carry. */
+.schedule-cell.slow {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--accent-soft),
+    var(--accent-soft) 3px,
+    var(--accent) 3px,
+    var(--accent) 6px
+  );
+  border-color: var(--accent);
+}
+
+.schedule-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  border: 1px solid var(--hairline);
+  background: var(--surface);
+}
+
+.schedule-swatch.s1 {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.schedule-swatch.s2 {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--accent-soft),
+    var(--accent-soft) 2px,
+    var(--accent) 2px,
+    var(--accent) 4px
+  );
+  border-color: var(--accent);
+}
+
 /* State encoded in shape, not only in the number */
 
 .pill {
@@ -1093,6 +1130,23 @@ button.remote-pill:hover {
 .explorer-name.muted {
   color: var(--muted);
   font-weight: 400;
+}
+
+/* A folder row carries two actions, opening it and restoring it, so the row cannot be
+   the button any more: the name is. It has to keep looking like the text it replaced. */
+button.explorer-name.as-link {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.explorer-name.as-link:hover {
+  color: var(--accent);
 }
 
 /* Second line of the name: how many files a folder holds, or that a file arrived in

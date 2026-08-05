@@ -13,13 +13,14 @@ import math
 import os
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, update
 from telethon.errors import FloodWaitError
 from telethon.tl.types import DocumentAttributeFilename
 
 from .. import notify
 from ..db import SessionLocal
 from ..models import (
+    GUARD_MIN_ENTRIES,
     MTIME_UNKNOWN,
     Channel,
     FileEntry,
@@ -31,6 +32,8 @@ from ..models import (
 )
 from ..telegram.fast_transfer import MAX_CONNECTIONS, call_with_timeout, upload_slice
 from ..telegram.manager import manager
+from ..telegram.throttle import limiter_for
+from . import window
 from .progress import hub
 from .source import build_source
 
@@ -77,6 +80,37 @@ def part_file_name(name: str, index: int, total: int) -> str:
 
 class JobCancelled(Exception):
     pass
+
+
+class DeleteGuardTripped(Exception):
+    """The run wanted to delete more than the job allows, so it deleted nothing.
+
+    A source that fails to mount is an empty folder, not an error: `list_files` returns
+    nothing and the diff concludes, correctly as far as it can see, that every file has
+    been removed. The channel would then be emptied message by message, and the messages
+    are the backup. The guard is what turns that into a run that fails.
+    """
+
+
+def guard_verdict(removals: int, known: int, percent: int, files: int) -> str | None:
+    """The reason the deletions must not go through, or None if they may.
+
+    Both limits are off at zero and either one is enough to stop the run. The percentage
+    is not applied to a job holding very few files, where any single deletion is a large
+    share of the whole and the ratio says nothing.
+    """
+    if removals <= 0:
+        return None
+    if files > 0 and removals >= files:
+        return f"{removals} files would be deleted, the limit for this job is {files}"
+    if percent > 0 and known >= GUARD_MIN_ENTRIES:
+        share = removals * 100 / known
+        if share >= percent:
+            return (
+                f"{removals} of the {known} indexed files would be deleted, "
+                f"that is {share:.0f}% against a limit of {percent}%"
+            )
+    return None
 
 
 class StopSignal:
@@ -129,9 +163,18 @@ class JobRunner:
             run_id = run.id
             job_name = job.name
             part_size = job.part_size_bytes
+            trash_days = job.trash_days
             account_id = job.account_id
             peer = manager.input_peer(channel)
             source = build_source(job)
+
+            # The ceiling of this job under the one of the installation, following the
+            # hours of the window: the provider is read as the bucket refills, so a run
+            # that crosses into a throttled hour slows down where it is.
+            zone = window.load_zone(await window.load_timezone(session))
+            limiter = limiter_for(
+                window.rate_provider(job.throttle_bps, job.schedule_hours, zone)
+            )
 
             account = await session.get(TelegramAccount, job.account_id)
             concurrency = max(1, account.max_concurrent_jobs if account else 2)
@@ -152,6 +195,12 @@ class JobRunner:
             progress.phase = "delete"
             progress.scanned_where = None
             await self._set_phase("delete")
+            purged = await self._purge_trash(trash_days)
+            if purged:
+                log.info(
+                    "Job %d: %d files out of the trash have passed %d days",
+                    self.job_id, purged, trash_days,
+                )
             removed = await self._apply_deletions(client, entity)
 
             # Two jobs on the same account would each open 20 connections and exceed the
@@ -170,7 +219,7 @@ class JobRunner:
                 progress.phase = "upload"
                 await self._set_phase("upload")
                 uploaded_files, uploaded_bytes = await self._upload_pending(
-                    client, entity, part_size, progress, source, max_connections
+                    client, entity, part_size, progress, source, max_connections, limiter
                 )
 
             async with SessionLocal() as session:
@@ -180,6 +229,8 @@ class JobRunner:
                 run.scanned = counters["scanned"]
                 run.added = counters["added"]
                 run.modified = counters["modified"]
+                run.trashed = counters["trashed"]
+                run.revived = counters["revived"]
                 run.removed = removed
                 run.uploaded_files = uploaded_files
                 run.uploaded_bytes = uploaded_bytes
@@ -191,6 +242,18 @@ class JobRunner:
                 if run is not None:
                     run.status = "stopped"
                     run.finished_at = utcnow()
+                    await session.commit()
+            raise
+        except Exception as exc:
+            # Without this the row stays "running" for ever, with no end date and no
+            # reason, until a restart sweeps it: the Runs page would show a failed run
+            # as one still going. The job status is set by the caller, this is the run.
+            async with SessionLocal() as session:
+                run = await session.get(JobRun, run_id)
+                if run is not None:
+                    run.status = "error"
+                    run.finished_at = utcnow()
+                    run.error = str(exc)[:1000]
                     await session.commit()
             raise
         finally:
@@ -223,6 +286,7 @@ class JobRunner:
 
         added = 0
         modified = 0
+        revived = 0
 
         async with SessionLocal() as session:
             result = await session.execute(
@@ -232,7 +296,28 @@ class JobRunner:
 
             for rel_path, item in on_disk.items():
                 entry = known.get(rel_path)
-                if entry is None:
+                if entry is not None and entry.state == "trashed":
+                    # Back at the source before the retention ran out. Its messages were
+                    # never deleted, so a file put back exactly as it was costs nothing:
+                    # the entry returns to `uploaded` and no byte travels. Only a file
+                    # that came back different has to be uploaded again.
+                    entry.trashed_at = None
+                    entry.error = None
+                    revived += 1
+                    if entry.size == item.size and entry.mtime_ns in (
+                        item.mtime_ns,
+                        MTIME_UNKNOWN,
+                    ):
+                        entry.mtime_ns = item.mtime_ns
+                        entry.name = item.name
+                        entry.state = "uploaded"
+                    else:
+                        entry.size = item.size
+                        entry.mtime_ns = item.mtime_ns
+                        entry.name = item.name
+                        entry.state = "stale"
+                        modified += 1
+                elif entry is None:
                     session.add(
                         FileEntry(
                             job_id=self.job_id,
@@ -268,8 +353,53 @@ class JobRunner:
                     entry.state = "stale"
                     entry.error = None
 
-            for rel_path, entry in known.items():
-                if rel_path not in on_disk:
+            # Only the files that disappeared during this run. One already in the trash,
+            # or already marked for deletion by a run that was interrupted before it got
+            # there, has been counted once and must not be counted again: otherwise a
+            # legitimate large deletion would trip the guard on every run for as long as
+            # the retention lasts.
+            removals = [
+                entry
+                for rel_path, entry in known.items()
+                if rel_path not in on_disk and entry.state not in ("trashed", "to_delete")
+            ]
+
+            # Before anything is written: the guard has to be able to leave the index
+            # exactly as it found it. Raising here rolls the whole transaction back, so a
+            # run stopped at this point has neither marked a deletion nor recorded a new
+            # file, and running it again once the source is back gives the same answer it
+            # would have given all along.
+            job = await session.get(SyncJob, self.job_id)
+            reason = guard_verdict(
+                len(removals),
+                len(known),
+                job.delete_guard_percent if job else 0,
+                job.delete_guard_files if job else 0,
+            )
+            if reason is not None and job is not None and job.delete_guard_bypass:
+                log.warning(
+                    "Job %d: deletion guard bypassed by the user (%s)", self.job_id, reason
+                )
+                reason = None
+            if reason is not None:
+                raise DeleteGuardTripped(reason)
+            if job is not None and job.delete_guard_bypass:
+                # Consumed whether or not it was needed: an acknowledgement is worth one
+                # run, or it would sit there disarming every run that follows.
+                job.delete_guard_bypass = False
+
+            trash_days = job.trash_days if job else 0
+            trashed = 0
+            now = utcnow()
+            for entry in removals:
+                if trash_days > 0 and entry.state == "uploaded":
+                    # Only a file that actually reached the channel is worth keeping: one
+                    # still pending has no message to hold on to, so there is nothing the
+                    # trash could give back and it goes straight out.
+                    entry.state = "trashed"
+                    entry.trashed_at = now
+                    trashed += 1
+                else:
                     entry.state = "to_delete"
 
             run = await session.get(JobRun, run_id)
@@ -277,9 +407,40 @@ class JobRunner:
                 run.scanned = len(on_disk)
                 run.added = added
                 run.modified = modified
+                run.trashed = trashed
+                run.revived = revived
             await session.commit()
 
-        return {"scanned": len(on_disk), "added": added, "modified": modified}
+        return {
+            "scanned": len(on_disk),
+            "added": added,
+            "modified": modified,
+            "trashed": trashed,
+            "revived": revived,
+        }
+
+    async def _purge_trash(self, trash_days: int) -> int:
+        """Sends the expired trash on to the deletion phase. Returns how many.
+
+        Nothing is deleted here: the entries become `to_delete` and the existing machinery
+        removes the messages and the rows, which is the only place in the application that
+        deletes from a channel. With the retention set back to zero the whole trash
+        expires at once, which is what turning the feature off has to mean.
+        """
+        cutoff = utcnow() - timedelta(days=trash_days)
+        async with SessionLocal() as session:
+            result = await session.execute(
+                update(FileEntry)
+                .where(
+                    FileEntry.job_id == self.job_id,
+                    FileEntry.state == "trashed",
+                    FileEntry.trashed_at.is_not(None),
+                    FileEntry.trashed_at < cutoff,
+                )
+                .values(state="to_delete")
+            )
+            await session.commit()
+            return result.rowcount or 0
 
     # Deletions
 
@@ -340,7 +501,8 @@ class JobRunner:
     # Upload
 
     async def _upload_pending(
-        self, client, entity, part_size: int, progress, source, max_connections: int
+        self, client, entity, part_size: int, progress, source, max_connections: int,
+        limiter,
     ) -> tuple[int, int]:
         async with SessionLocal() as session:
             totals = await session.execute(
@@ -382,7 +544,7 @@ class JobRunner:
             try:
                 sent = await self._upload_one(
                     client, entity, source, rel_path, name, size, part_size,
-                    progress, file_id, max_connections
+                    progress, file_id, max_connections, limiter
                 )
             except JobCancelled:
                 async with SessionLocal() as session:
@@ -432,6 +594,7 @@ class JobRunner:
         progress,
         file_id: int,
         max_connections: int,
+        limiter,
     ) -> int:
         """Uploads a file, splitting it above the threshold. Returns the number of parts.
 
@@ -448,7 +611,8 @@ class JobRunner:
             file_name = part_file_name(name, index, len(slices))
 
             handle = await self._upload_with_retry(
-                client, source, rel_path, offset, length, file_name, progress, max_connections
+                client, source, rel_path, offset, length, file_name, progress,
+                max_connections, limiter,
             )
 
             caption = build_caption(rel_path, name, index, len(slices))
@@ -485,7 +649,7 @@ class JobRunner:
 
     async def _upload_with_retry(
         self, client, source, rel_path: str, offset: int, length: int, file_name: str,
-        progress, max_connections: int,
+        progress, max_connections: int, limiter,
     ):
         attempt = 0
         while True:
@@ -502,6 +666,7 @@ class JobRunner:
                     cancel=self.cancel,
                     source=f"{source.label}/{rel_path}",
                     max_connections=max_connections,
+                    limiter=limiter,
                 )
             except FloodWaitError as exc:
                 log.warning("Flood wait of %ss while uploading %s", exc.seconds, file_name)
@@ -539,6 +704,17 @@ async def execute_job(job_id: int, cancel: StopSignal) -> None:
             job_id,
             cancel.reason if interrupted_by_system else "user request",
         )
+    except DeleteGuardTripped as exc:
+        # Not an unexpected failure: the run did exactly what it was told to do, which
+        # was to stop. The message has to say what to look at and what to press, because
+        # this is the one error whose right answer is sometimes "yes, go ahead".
+        log.warning("Job %d stopped by the deletion guard: %s", job_id, exc)
+        status = "error"
+        error = (
+            f"Deletion guard: {exc}. Nothing was deleted and the index was left "
+            "untouched. Check that the source is mounted and points where it should, "
+            "then either fix it or allow the deletion for one run."
+        )
     except Exception as exc:
         log.exception("Job %d failed", job_id)
         status = "error"
@@ -551,6 +727,10 @@ async def execute_job(job_id: int, cancel: StopSignal) -> None:
             job.phase = None
             job.last_error = error
             job.last_finished_at = utcnow()
+            if status == "idle":
+                # A run that went through is the answer to the silence alarm: whatever was
+                # reported is over, and the next silence starts counting again from here.
+                job.silence_alerted_at = None
             if not interrupted_by_system:
                 # The interval starts from the end: a job running for three days does not
                 # pile up missed executions to catch up all at once.
@@ -596,6 +776,12 @@ async def _report(job_id: int, status: str, error: str | None) -> None:
             f"Examined {run.scanned}, new {run.added}, modified {run.modified}, "
             f"removed {run.removed}"
         )
+        if run.trashed or run.revived:
+            # Only when something happened: a job without a trash would otherwise carry
+            # two zeroes in every report it ever sends.
+            lines.append(
+                f"Moved to the trash {run.trashed}, brought back {run.revived}"
+            )
         lines.append(
             f"Uploaded {run.uploaded_files} files, {notify.format_bytes(run.uploaded_bytes)}"
         )

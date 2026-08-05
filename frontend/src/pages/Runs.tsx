@@ -89,6 +89,7 @@ function SyncHistory({ jobs }: { jobs: Job[] }) {
                   <th className="right">Examined</th>
                   <th className="right">New</th>
                   <th className="right">Modified</th>
+                  <th className="right">Trashed</th>
                   <th className="right">Removed</th>
                   <th className="right">Files uploaded</th>
                   <th className="right">Data uploaded</th>
@@ -105,6 +106,10 @@ function SyncHistory({ jobs }: { jobs: Job[] }) {
                     <td className="right num">{run.scanned.toLocaleString("en-US")}</td>
                     <td className="right num">{run.added.toLocaleString("en-US")}</td>
                     <td className="right num">{run.modified.toLocaleString("en-US")}</td>
+                    <td className="right num">
+                      {run.trashed.toLocaleString("en-US")}
+                      {run.revived ? ` (-${run.revived.toLocaleString("en-US")})` : ""}
+                    </td>
                     <td className="right num">{run.removed.toLocaleString("en-US")}</td>
                     <td className="right num">{run.uploaded_files.toLocaleString("en-US")}</td>
                     <td className="right num">{formatBytes(run.uploaded_bytes)}</td>
