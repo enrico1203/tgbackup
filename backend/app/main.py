@@ -25,6 +25,7 @@ from .models import User
 from .security import hash_password
 from .sync.progress import hub
 from .sync.scheduler import scheduler
+from .telegram import patches
 from .telegram.manager import manager
 
 logging.basicConfig(
@@ -52,6 +53,8 @@ async def seed_admin() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # Before any client exists: the patch changes how every request is serialized.
+    patches.apply()
     await upgrade_database(engine)
     await seed_admin()
 
