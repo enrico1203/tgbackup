@@ -169,6 +169,26 @@ deletes it from the channel, exactly as if it had disappeared from the source. T
 up a channel that has years of `.DS_Store` in it, and it is also how you lose something if a pattern
 has one character too many.
 
+## Schedule windows
+
+Every job, sync or download, carries a grid of seven days by twenty-four hours in its form. Drag
+across it to paint the hours the job is allowed to run in, click a day or an hour to toggle the whole
+line, or start from one of the presets: always, nights, outside office hours, weekend only.
+
+The window does not replace the interval, it gates it. A job still becomes due every so many hours
+from the end of its previous run, and the window decides whether it may start at that moment: if the
+moment falls outside, the job waits for the next opening rather than losing the run. Pressing Run now
+ignores the window entirely, because that is an explicit order.
+
+A run that started inside the window and is still going when the window closes is left alone by
+default. Tick "Stop a run in progress when the window closes" and it stops at its next checkpoint
+instead: the parts already sent stay on Telegram, the next run is not pushed forward by a whole
+interval, and the job picks up again at the next opening. This is what turns a window into a real
+constraint on when your line is busy, and it is safe because every part is recorded as it is sent.
+
+The hours are read in the timezone set in Settings, which also decides how the window follows the
+change of season. Everything else, run times included, is kept in UTC.
+
 ## Notifications
 
 A report at the end of a run, in the Saved Messages of a Telegram account. Nothing to install: the

@@ -82,9 +82,10 @@ class JobCancelled(Exception):
 class StopSignal:
     """Request to stop a job, carrying the reason.
 
-    The reason matters: if the job stops because the process is shutting down, the next
-    run must not be pushed forward by a whole interval, otherwise every container restart
-    would move the backup by hours. If the user stopped it instead, the normal interval
+    The reason matters: if the job stops because the process is shutting down, or because
+    its schedule window closed under it, the next run must not be pushed forward by a whole
+    interval, otherwise every container restart would move the backup by hours and a night
+    window would only ever get one run. If the user stopped it instead, the normal interval
     applies.
     """
 
@@ -522,7 +523,9 @@ async def execute_job(job_id: int, cancel: StopSignal) -> None:
 
     status = "idle"
     error: str | None = None
-    interrupted_by_shutdown = False
+    # Stopped by the system rather than by the user: shutdown, or the schedule window
+    # closing. In both cases the run is being put back where it was, not finished.
+    interrupted_by_system = False
     try:
         # No semaphore here: serializing the whole execution would stop a job from even
         # scanning while another one on the same account uploads, and with runs lasting
@@ -530,11 +533,11 @@ async def execute_job(job_id: int, cancel: StopSignal) -> None:
         # upload phase alone.
         await runner.run()
     except JobCancelled:
-        interrupted_by_shutdown = cancel.reason == "shutdown"
+        interrupted_by_system = cancel.reason in ("shutdown", "window")
         log.info(
             "Job %d interrupted (%s)",
             job_id,
-            "shutdown" if interrupted_by_shutdown else "user request",
+            cancel.reason if interrupted_by_system else "user request",
         )
     except Exception as exc:
         log.exception("Job %d failed", job_id)
@@ -548,20 +551,21 @@ async def execute_job(job_id: int, cancel: StopSignal) -> None:
             job.phase = None
             job.last_error = error
             job.last_finished_at = utcnow()
-            if not interrupted_by_shutdown:
+            if not interrupted_by_system:
                 # The interval starts from the end: a job running for three days does not
                 # pile up missed executions to catch up all at once.
                 job.next_run_at = datetime.now(UTC) + timedelta(
                     hours=job.interval_hours
                 )
-            # If shutdown stopped it, next_run_at stays as it was: on restart the job
-            # resumes right away instead of skipping a whole interval.
+            # If shutdown or the window stopped it, next_run_at stays as it was: the job
+            # resumes on restart, or when the window opens again, instead of skipping a
+            # whole interval.
             await session.commit()
 
-    if not interrupted_by_shutdown:
-        # No report when the process is going down: the job has not finished, it is being
-        # put back where it was, and a message saying it stopped would be noise on every
-        # deploy.
+    if not interrupted_by_system:
+        # No report when the process is going down or the window closed: the job has not
+        # finished, it is being put back where it was, and a message saying it stopped
+        # would be noise on every deploy and every morning.
         await _report(job_id, status, error)
 
 

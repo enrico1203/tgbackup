@@ -413,15 +413,17 @@ async def execute_download_job(job_id: int, cancel: StopSignal) -> None:
 
     status = "idle"
     error: str | None = None
-    interrupted_by_shutdown = False
+    # Shutdown or the schedule window closing, as for a sync job: the run is interrupted,
+    # not finished.
+    interrupted_by_system = False
     try:
         await runner.run()
     except JobCancelled:
-        interrupted_by_shutdown = cancel.reason == "shutdown"
+        interrupted_by_system = cancel.reason in ("shutdown", "window")
         log.info(
             "Download job %d interrupted (%s)",
             job_id,
-            "shutdown" if interrupted_by_shutdown else "user request",
+            cancel.reason if interrupted_by_system else "user request",
         )
     except Exception as exc:
         log.exception("Download job %d failed", job_id)
@@ -435,14 +437,14 @@ async def execute_download_job(job_id: int, cancel: StopSignal) -> None:
             job.phase = None
             job.last_error = error
             job.last_finished_at = utcnow()
-            if not interrupted_by_shutdown:
+            if not interrupted_by_system:
                 # The interval starts from the end of the run, as it does for a sync job.
                 job.next_run_at = datetime.now(UTC) + timedelta(hours=job.interval_hours)
-            # If shutdown stopped it, next_run_at stays as it was and the job resumes on
-            # restart instead of skipping a whole interval.
+            # If shutdown or the window stopped it, next_run_at stays as it was and the
+            # job resumes instead of skipping a whole interval.
             await session.commit()
 
-    if not interrupted_by_shutdown:
+    if not interrupted_by_system:
         await _report(job_id, status, error)
 
 

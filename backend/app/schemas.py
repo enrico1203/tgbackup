@@ -3,6 +3,13 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .models import SCHEDULE_ALWAYS
+
+# The weekly window, 168 hours of "0" and "1". Validated here rather than in the job
+# forms so a wrong length is a 422 with the field named, not a schedule silently read
+# as always open.
+SCHEDULE_PATTERN = r"^[01]{168}$"
+
 
 class Model(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -115,6 +122,8 @@ class JobIn(BaseModel):
     include_globs: str = ""
     exclude_globs: str = ""
     max_file_size: int = Field(default=0, ge=0)
+    schedule_hours: str = Field(default=SCHEDULE_ALWAYS, pattern=SCHEDULE_PATTERN)
+    stop_outside_window: bool = False
     enabled: bool = True
 
 
@@ -130,6 +139,8 @@ class JobUpdate(BaseModel):
     include_globs: str | None = None
     exclude_globs: str | None = None
     max_file_size: int | None = Field(default=None, ge=0)
+    schedule_hours: str | None = Field(default=None, pattern=SCHEDULE_PATTERN)
+    stop_outside_window: bool | None = None
     enabled: bool | None = None
 
 
@@ -156,6 +167,8 @@ class JobOut(Model):
     include_globs: str
     exclude_globs: str
     max_file_size: int
+    schedule_hours: str
+    stop_outside_window: bool
     enabled: bool
     status: str
     phase: str | None
@@ -170,6 +183,11 @@ class JobOut(Model):
     # Used by the frontend to build the t.me/c/<channel>/<message> links.
     channel_tg_id: int = 0
     stats: JobStats = JobStats()
+    # Computed from the window and the timezone of the installation: whether the job may
+    # start right now and, if not, when it may. Computed here because the browser would
+    # have to redo the timezone arithmetic to get the same answer.
+    window_open: bool = True
+    next_window_at: datetime | None = None
 
 
 class JobRunOut(Model):
@@ -198,6 +216,8 @@ class DownloadJobIn(BaseModel):
     local_path: str = ""
     remote: str | None = None
     interval_hours: float = Field(gt=0, le=24 * 365)
+    schedule_hours: str = Field(default=SCHEDULE_ALWAYS, pattern=SCHEDULE_PATTERN)
+    stop_outside_window: bool = False
     enabled: bool = True
 
 
@@ -208,6 +228,8 @@ class DownloadJobUpdate(BaseModel):
     local_path: str | None = None
     remote: str | None = None
     interval_hours: float | None = Field(default=None, gt=0, le=24 * 365)
+    schedule_hours: str | None = Field(default=None, pattern=SCHEDULE_PATTERN)
+    stop_outside_window: bool | None = None
     enabled: bool | None = None
 
 
@@ -233,6 +255,8 @@ class DownloadJobOut(Model):
     local_path: str
     remote: str | None
     interval_hours: float
+    schedule_hours: str
+    stop_outside_window: bool
     enabled: bool
     status: str
     phase: str | None
@@ -246,6 +270,8 @@ class DownloadJobOut(Model):
     channel_title: str = ""
     channel_tg_id: int = 0
     stats: DownloadStats = DownloadStats()
+    window_open: bool = True
+    next_window_at: datetime | None = None
 
 
 class DownloadRunOut(Model):
@@ -475,6 +501,16 @@ class NotifyPreferencesIn(BaseModel):
 class NotifyPreferencesOut(BaseModel):
     events: str
     account_id: int
+
+
+class SchedulePreferencesIn(BaseModel):
+    # An IANA name, "Europe/Rome". The schedule windows are read in this zone, so a job
+    # set to run at night keeps running at night across a change of season.
+    timezone: str = Field(min_length=1, max_length=64)
+
+
+class SchedulePreferencesOut(BaseModel):
+    timezone: str
 
 
 # Channel maintenance

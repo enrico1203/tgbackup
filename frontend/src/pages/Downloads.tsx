@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router";
 import {
+  CalendarClock,
   CloudDownload,
   FolderOpen,
   FolderSearch,
@@ -16,6 +17,7 @@ import {
 import { api } from "../lib/api";
 import { formatBytes, formatDateTime, formatInterval } from "../lib/format";
 import { useProgress } from "../lib/progress";
+import ScheduleGrid, { ALWAYS, describeSchedule } from "../components/ScheduleGrid";
 import DownloadActivity, { downloadPhaseLabel } from "../components/DownloadActivity";
 import RemoteBrowser from "../components/RemoteBrowser";
 import type { Account, Channel, DownloadJob, RcloneStatus } from "../lib/types";
@@ -48,6 +50,8 @@ function DownloadForm({ job, onClose }: { job: DownloadJob | null; onClose: () =
   const [remote, setRemote] = useState(job?.remote ?? "");
   const [browsing, setBrowsing] = useState<string | null>(null);
   const [intervalHours, setIntervalHours] = useState(String(job?.interval_hours ?? 24));
+  const [scheduleHours, setScheduleHours] = useState(job?.schedule_hours ?? ALWAYS);
+  const [stopOutsideWindow, setStopOutsideWindow] = useState(job?.stop_outside_window ?? false);
   const [enabled, setEnabled] = useState(job?.enabled ?? true);
 
   const { data: channels } = useQuery({
@@ -71,6 +75,8 @@ function DownloadForm({ job, onClose }: { job: DownloadJob | null; onClose: () =
         local_path: destType === "local" ? localPath.trim() : "",
         remote: destType === "rclone" ? remote.trim() : null,
         interval_hours: Number(intervalHours),
+        schedule_hours: scheduleHours,
+        stop_outside_window: stopOutsideWindow,
         enabled,
       };
       if (job) {
@@ -259,6 +265,30 @@ function DownloadForm({ job, onClose }: { job: DownloadJob | null; onClose: () =
           />
         </Field>
 
+        <Field
+          label="Hours the job may run in"
+          hint="Drag to paint, click a day or an hour to toggle the whole line. A run that becomes due outside these hours waits for the next opening. Times are read in the timezone set in Settings."
+        >
+          <ScheduleGrid value={scheduleHours} onChange={setScheduleHours} />
+        </Field>
+
+        {scheduleHours.includes("0") ? (
+          <label className="switch">
+            <input
+              type="checkbox"
+              checked={stopOutsideWindow}
+              onChange={(e) => setStopOutsideWindow(e.target.checked)}
+            />
+            <span>Stop a run in progress when the window closes</span>
+          </label>
+        ) : null}
+
+        {scheduleHours.includes("1") ? null : (
+          <Alert tone="info">
+            Every hour is closed: the job will only ever run when you press Run now.
+          </Alert>
+        )}
+
         <label className="switch">
           <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
           <span>Run automatically on the interval</span>
@@ -381,6 +411,12 @@ function DownloadCard({
           </span>
           <span>account {job.account_label}</span>
           <span>every {formatInterval(job.interval_hours)}</span>
+          {job.schedule_hours.includes("0") ? (
+            <span className="row" style={{ gap: 6 }}>
+              <CalendarClock size={12} />
+              {describeSchedule(job.schedule_hours)}
+            </span>
+          ) : null}
         </div>
 
         {running && progress ? (
@@ -409,7 +445,16 @@ function DownloadCard({
 
         <div className="row wrap" style={{ gap: 24, fontSize: 12, color: "var(--muted)" }}>
           <span>last run {formatDateTime(job.last_finished_at)}</span>
-          <span>next {job.enabled ? formatDateTime(job.next_run_at) : "disabled"}</span>
+          <span>
+            next{" "}
+            {!job.enabled
+              ? "disabled"
+              : job.window_open
+                ? formatDateTime(job.next_run_at)
+                : job.next_window_at
+                  ? `window opens ${formatDateTime(job.next_window_at)}`
+                  : "never, the window is closed at every hour"}
+          </span>
           <Link to={`/files?channel=${job.channel_id}`}>See the files</Link>
         </div>
       </div>

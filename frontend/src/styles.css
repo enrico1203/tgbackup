@@ -561,6 +561,67 @@ input::placeholder {
   width: auto;
 }
 
+/* Weekly schedule window, 7 days by 24 hours.
+   The grid scrolls inside itself rather than stretching the dialog: 24 columns cannot
+   shrink below the point where a finger can hit one. touch-action none is what lets a
+   drag paint on a phone instead of scrolling the page under it. */
+
+.schedule {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.schedule-grid {
+  display: grid;
+  grid-template-columns: 38px repeat(24, minmax(14px, 1fr));
+  gap: 2px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  touch-action: none;
+  user-select: none;
+}
+
+.schedule-corner {
+  min-height: 16px;
+}
+
+.schedule-head,
+.schedule-day {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-family: var(--font-mono);
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.schedule-day {
+  font-family: var(--font);
+  text-align: left;
+  padding-right: 6px;
+}
+
+.schedule-head:hover,
+.schedule-day:hover {
+  color: var(--text);
+}
+
+.schedule-cell {
+  min-height: 20px;
+  border-radius: 3px;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  cursor: pointer;
+}
+
+.schedule-cell.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
 /* State encoded in shape, not only in the number */
 
 .pill {

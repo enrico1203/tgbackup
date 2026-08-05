@@ -19,6 +19,12 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+# A weekly window, one character per hour, Monday 00:00 to Sunday 23:00 in the timezone
+# of the installation: "1" the job may run, "0" it may not. All ones is the default and
+# means no restriction, which is what every job created before the feature existed gets.
+# See sync/window.py.
+SCHEDULE_ALWAYS = "1" * 168
+
 # An entry rebuilt by reading the channel has no date: the caption of a message carries the
 # name, the folder and the part number, never the modification time. This value marks that
 # absence, and the first scan of the job adopts the date of the source instead of taking
@@ -118,6 +124,11 @@ class SyncJob(Base):
     # 0 means no ceiling. Above zero, files larger than this are left out of the backup.
     max_file_size: Mapped[int] = mapped_column(BigInteger, default=0)
 
+    # The hours of the week the job may run in, and whether a run already started has to
+    # stop when the window closes instead of going through to the end.
+    schedule_hours: Mapped[str] = mapped_column(Text, default=SCHEDULE_ALWAYS)
+    stop_outside_window: Mapped[bool] = mapped_column(Boolean, default=False)
+
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # idle, running, error
     status: Mapped[str] = mapped_column(String(32), default="idle")
@@ -155,6 +166,11 @@ class DownloadJob(Base):
     remote: Mapped[str | None] = mapped_column(Text)
 
     interval_hours: Mapped[float] = mapped_column(Float, default=24.0)
+
+    # Same weekly window a sync job has: the direction the bytes travel in changes
+    # nothing about when the line is free.
+    schedule_hours: Mapped[str] = mapped_column(Text, default=SCHEDULE_ALWAYS)
+    stop_outside_window: Mapped[bool] = mapped_column(Boolean, default=False)
 
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     # idle, running, error

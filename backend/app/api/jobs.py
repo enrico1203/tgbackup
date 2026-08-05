@@ -1,5 +1,7 @@
 import asyncio
 import os
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import case, func, select
@@ -8,6 +10,7 @@ from ..deps import ActiveUserDep, SessionDep
 from ..models import Channel, FileEntry, JobRun, SyncJob, TelegramAccount
 from ..rclone import client as rclone
 from ..schemas import JobIn, JobOut, JobRunOut, JobStats, JobUpdate
+from ..sync import window
 from ..sync.scheduler import SYNC, scheduler
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -40,7 +43,7 @@ async def _stats(session, job_id: int) -> JobStats:
     )
 
 
-async def _to_out(session, job: SyncJob) -> JobOut:
+async def _to_out(session, job: SyncJob, zone: ZoneInfo | None = None) -> JobOut:
     out = JobOut.model_validate(job)
     account = await session.get(TelegramAccount, job.account_id)
     channel = await session.get(Channel, job.channel_id)
@@ -48,13 +51,22 @@ async def _to_out(session, job: SyncJob) -> JobOut:
     out.channel_title = channel.title if channel else ""
     out.channel_tg_id = channel.tg_id if channel else 0
     out.stats = await _stats(session, job.id)
+
+    # The zone is read once per request when a whole list is being built, since it is one
+    # value for the installation and the same for every row.
+    if zone is None:
+        zone = window.load_zone(await window.load_timezone(session))
+    now = datetime.now(UTC)
+    out.window_open = window.is_open(job.schedule_hours, zone, now)
+    out.next_window_at = window.next_opening(job.schedule_hours, zone, now)
     return out
 
 
 @router.get("", response_model=list[JobOut])
 async def list_jobs(session: SessionDep, _: ActiveUserDep) -> list[JobOut]:
+    zone = window.load_zone(await window.load_timezone(session))
     result = await session.execute(select(SyncJob).order_by(SyncJob.id))
-    return [await _to_out(session, job) for job in result.scalars()]
+    return [await _to_out(session, job, zone) for job in result.scalars()]
 
 
 @router.get("/{job_id}", response_model=JobOut)
@@ -138,6 +150,11 @@ async def create_job(payload: JobIn, session: SessionDep, _: ActiveUserDep) -> J
         interval_hours=payload.interval_hours,
         scan_files_per_sec=payload.scan_files_per_sec,
         part_size_bytes=payload.part_size_bytes or account.default_part_size,
+        include_globs=payload.include_globs,
+        exclude_globs=payload.exclude_globs,
+        max_file_size=payload.max_file_size,
+        schedule_hours=payload.schedule_hours,
+        stop_outside_window=payload.stop_outside_window,
         enabled=payload.enabled,
     )
     session.add(job)

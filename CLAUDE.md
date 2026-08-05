@@ -72,13 +72,15 @@ backend/
     api/       auth accounts jobs downloads files explorer dashboard export maintenance
                preferences rclone ws
     telegram/  manager.py (client registry, peers) fast_transfer.py (parallel upload/download)
+               patches.py (the changes made to Telethon from the outside)
     rclone/    client.py (streaming lsjson, ranged cat, rcat, touch, config on disk)
     sync/      source.py destination.py scanner.py filters.py runner.py download.py
-               scheduler.py restore.py progress.py
+               scheduler.py window.py restore.py progress.py
 frontend/src/
   pages/     Login ChangePassword Dashboard Jobs Downloads Accounts Explorer Files Runs
              Export Maintenance Settings
   components/ Shell ui JobActivity DownloadActivity RemoteBrowser ChannelPicker
+              ScheduleGrid
   lib/       api auth progress types format theme channels
 .github/
   workflows/ ci.yml trivy.yml release.yml
@@ -99,6 +101,21 @@ Premium accounts, 1.9e9 for the others, detected from `get_me().premium`.
 20 per data center Telegram blocks them all. The reader is sequential and the senders work in
 parallel, so a slice of a large file is uploaded without temporary files. Photos and videos always
 go as documents (`force_document=True`), never recompressed.
+
+**Telethon gzips every request, and that was the ceiling** (measured 2026-08-05).
+`MTProtoState.write_data_as_message` runs each outgoing body through
+`GzipPacked.gzip_if_smaller`, which compresses anything over 512 bytes at level 9 and
+keeps the result only if it came out shorter. On a 512KB part of a video the answer is
+always no: on this image gzip level 9 does 37.7 MB/s on one core and returns 178 bytes
+more than it was given, so the copy is built and thrown away for every part uploaded.
+With the process at 100% of one core and around 20 MB/s of upload, a second account
+changed nothing, because the limit was never the 20 connections per data center. On the
+same core AES-IGE through cryptg runs at 298 MB/s and SHA-256 at 1600 MB/s, so with the
+gzip gone the Python side is no longer what decides the speed. `telegram/patches.py`
+skips compression for bodies above 16 KB, which in this application means media parts and
+nothing else, and `main.py` applies it before any client exists. A body that is not
+gzipped is always accepted: compressing is an option the client may take, never an
+obligation.
 
 **Connection budget**: the 20 connections are per data center, not per job. `max_concurrent_jobs` on
 the account divides the budget: with 2 concurrent jobs each gets 10. Raising it does not increase
@@ -154,6 +171,22 @@ user and hide the actual message, so `_clean_error` strips them, dedupes and tru
 **Telegram peers**: built from the stored `tg_id` plus `access_hash`, never resolved with
 `get_entity` on a numeric id. A bare positive integer is read as a user, and `StringSession` does not
 keep the entity cache, so resolution would fail after a restart.
+
+**Schedule windows** (`sync/window.py`, `ScheduleGrid.tsx`): 168 characters on the job row, one per
+hour of the week, Monday 00:00 first, "1" open. A string and not a table because it is always read
+whole and never queried. It gates the interval, it does not replace it: a job becomes due exactly as
+before and the window only decides whether it may start then, so a run that falls outside waits for
+the opening instead of being lost. Run now ignores it, being an explicit order. With
+`stop_outside_window` a run still going when the window closes is cancelled with reason `window`,
+which `runner.py` and `download.py` treat like `shutdown`: `next_run_at` is not moved and no report is
+sent, so the job resumes at the next opening rather than skipping an interval and the user does not
+get a message every morning. Safe only because every part is recorded as it is sent. The hours are
+local hours, in one timezone for the installation kept in `settings` (`schedule_timezone`, no
+migration needed); arithmetic stays in UTC and only reading the slot converts, so a DST change moves
+the window by an hour for a day and can never loop. An unparseable window normalises to always open:
+a schedule that cannot be read must never be the reason a backup stops. `window_open` and
+`next_window_at` are computed on the job out, since the browser would have to redo the timezone
+arithmetic to get the same answer.
 
 **Scheduler**: asyncio supervisor with a 10 s tick. The `running` state lives in the database, so the
 same job never overlaps itself even if it runs for days. `next_run_at` is computed from the end of
@@ -349,6 +382,12 @@ a remote is not guaranteed: comparing dates would re-download everything on ever
 tables, no column added to the existing ones, so a database with rows goes through untouched.
 `0003` adds `include_globs`, `exclude_globs` and `max_file_size` to `sync_jobs`, three ADD COLUMN
 with the DDL default that `process_revision_directives` filled in by itself.
+
+**`0004` adds the schedule windows** (2026-08-05), `schedule_hours` and `stop_outside_window` on
+both `sync_jobs` and `download_jobs`: four ADD COLUMN with the DDL default filled in by
+`process_revision_directives`, so a database with rows goes through untouched and every existing job
+comes out with an always-open window. Verified with `check_migrations.py`, which seeds a row into
+every table before upgrading.
 
 **One filter engine, not rclone's** (since 2026-07-27). rclone has `--exclude` and it would have
 cost nothing to pass the patterns down, but then a pattern would mean one thing on a remote and

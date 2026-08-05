@@ -1,10 +1,23 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BellRing, CheckCircle2, FileText, HardDrive, PencilLine, Trash2 } from "lucide-react";
+import {
+  BellRing,
+  CalendarClock,
+  CheckCircle2,
+  FileText,
+  HardDrive,
+  PencilLine,
+  Trash2,
+} from "lucide-react";
 
 import { api } from "../lib/api";
 import { formatDateTime } from "../lib/format";
-import type { Account, NotifyPreferences, RcloneStatus } from "../lib/types";
+import type {
+  Account,
+  NotifyPreferences,
+  RcloneStatus,
+  SchedulePreferences,
+} from "../lib/types";
 import RemoteBrowser from "../components/RemoteBrowser";
 import { Alert, Card, CardHead, Field, Pill, Spinner } from "../components/ui";
 
@@ -109,6 +122,96 @@ function Notifications() {
             {save.isPending ? <Spinner /> : null}
             Save
           </button>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function Timezone() {
+  const queryClient = useQueryClient();
+  const [zone, setZone] = useState<string | null>(null);
+
+  const { data } = useQuery({
+    queryKey: ["schedule-preferences"],
+    queryFn: () => api.get<SchedulePreferences>("/api/preferences/schedule"),
+  });
+
+  const save = useMutation({
+    mutationFn: (payload: SchedulePreferences) =>
+      api.put<SchedulePreferences>("/api/preferences/schedule", payload),
+    onSuccess: (result) => {
+      queryClient.setQueryData(["schedule-preferences"], result);
+      // Every job shows its window in this zone: the two lists are now stale.
+      void queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["downloads"] });
+      setZone(null);
+    },
+  });
+
+  // The list the browser itself knows about, so no table has to be kept up to date here.
+  // Older engines without it fall back to the two names that are always resolvable.
+  const zones =
+    typeof Intl.supportedValuesOf === "function"
+      ? Intl.supportedValuesOf("timeZone")
+      : ["UTC", Intl.DateTimeFormat().resolvedOptions().timeZone];
+  const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+  const current = zone ?? data?.timezone ?? "UTC";
+  const dirty = data !== undefined && current !== data.timezone;
+
+  return (
+    <Card>
+      <CardHead title="Schedule timezone">
+        <Pill tone="mute">
+          <CalendarClock size={11} />
+          {current}
+        </Pill>
+      </CardHead>
+
+      <div className="card-body">
+        <p style={{ margin: 0, color: "var(--muted)", maxWidth: "70ch" }}>
+          The hours a job is allowed to run in are read in this zone, and so is the change
+          of season: a window set on the night keeps running at night. Everything else,
+          run times included, is stored in UTC.
+        </p>
+
+        {save.isError ? <Alert>{(save.error as Error).message}</Alert> : null}
+
+        <div className="grid-2">
+          <Field
+            label="Timezone"
+            hint={`This browser is on ${browserZone}.`}
+          >
+            <select value={current} onChange={(event) => setZone(event.target.value)}>
+              {(zones.includes(current) ? zones : [current, ...zones]).map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+
+        <div className="row">
+          <button
+            type="button"
+            className="btn"
+            disabled={!dirty || save.isPending}
+            onClick={() => save.mutate({ timezone: current })}
+          >
+            {save.isPending ? <Spinner /> : null}
+            Save
+          </button>
+          {data && data.timezone !== browserZone ? (
+            <button
+              type="button"
+              className="btn ghost"
+              onClick={() => setZone(browserZone)}
+            >
+              Use this browser's zone
+            </button>
+          ) : null}
         </div>
       </div>
     </Card>
@@ -321,6 +424,7 @@ export default function Settings() {
       </Card>
 
       <Notifications />
+      <Timezone />
 
       {browsing ? (
         <RemoteBrowser remote={browsing} onClose={() => setBrowsing(null)} />

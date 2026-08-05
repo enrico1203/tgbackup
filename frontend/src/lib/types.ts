@@ -70,6 +70,8 @@ export interface Job {
   include_globs: string;
   exclude_globs: string;
   max_file_size: number;
+  schedule_hours: string;
+  stop_outside_window: boolean;
   enabled: boolean;
   status: string;
   phase: string | null;
@@ -82,6 +84,8 @@ export interface Job {
   channel_title: string;
   channel_tg_id: number;
   stats: JobStats;
+  window_open: boolean;
+  next_window_at: string | null;
 }
 
 export interface JobRun {
@@ -117,6 +121,8 @@ export interface DownloadJob {
   local_path: string;
   remote: string | null;
   interval_hours: number;
+  schedule_hours: string;
+  stop_outside_window: boolean;
   enabled: boolean;
   status: string;
   phase: string | null;
@@ -129,6 +135,8 @@ export interface DownloadJob {
   channel_title: string;
   channel_tg_id: number;
   stats: DownloadStats;
+  window_open: boolean;
+  next_window_at: string | null;
 }
 
 export interface DownloadRun {
@@ -295,6 +303,10 @@ export interface ImportResult {
 export interface NotifyPreferences {
   events: "off" | "errors" | "all";
   account_id: number;
+}
+
+export interface SchedulePreferences {
+  timezone: string;
 }
 
 export interface MaintenanceTask {

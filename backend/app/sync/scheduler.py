@@ -7,6 +7,9 @@ ghost jobs stuck.
 Sync jobs and download jobs are two tables with two independent numbering schemes, so
 everything here is keyed by the pair (kind, id): job 3 and download job 3 are two
 different jobs and must be able to run at the same time.
+
+The schedule window (see window.py) is checked here and only here, and only for runs the
+scheduler starts: pressing Run is an explicit order and runs the job whatever the hour.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from sqlalchemy import select, update
 from ..config import settings
 from ..db import SessionLocal
 from ..models import DownloadJob, DownloadRun, JobRun, SyncJob
+from . import window
 from .download import execute_download_job
 from .runner import StopSignal, execute_job
 
@@ -104,16 +108,37 @@ class Scheduler:
     async def _tick(self) -> None:
         now = datetime.now(UTC)
         due: list[Key] = []
+        closing: list[Key] = []
         async with SessionLocal() as session:
+            zone = window.load_zone(await window.load_timezone(session))
             for kind, model in _MODELS.items():
                 result = await session.execute(
-                    select(model).where(model.enabled.is_(True), model.status == "idle")
+                    select(model).where(
+                        model.enabled.is_(True), model.status.in_(("idle", "running"))
+                    )
                 )
-                due.extend(
-                    (kind, job.id)
-                    for job in result.scalars()
-                    if job.next_run_at is None or _as_utc(job.next_run_at) <= now
-                )
+                for job in result.scalars():
+                    open_now = window.is_open(job.schedule_hours, zone, now)
+                    if job.status == "running":
+                        # A run started inside the window and still going when it closes
+                        # is stopped only if the job asks for it. Its next_run_at is not
+                        # moved, so it starts again at the next opening.
+                        if job.stop_outside_window and not open_now:
+                            closing.append((kind, job.id))
+                        continue
+                    if not open_now:
+                        # Due but outside its hours: it waits for the opening instead of
+                        # losing the run.
+                        continue
+                    if job.next_run_at is None or _as_utc(job.next_run_at) <= now:
+                        due.append((kind, job.id))
+
+        for kind, job_id in closing:
+            cancel = self._cancels.get((kind, job_id))
+            if cancel is None or cancel.is_set():
+                continue
+            log.info("Stopping %s job %d: the schedule window closed", kind, job_id)
+            cancel.set("window")
 
         for kind, job_id in due:
             if self.is_running(kind, job_id):

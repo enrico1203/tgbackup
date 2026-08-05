@@ -1,5 +1,7 @@
 import asyncio
 import os
+from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import func, select
@@ -14,6 +16,7 @@ from ..schemas import (
     DownloadRunOut,
     DownloadStats,
 )
+from ..sync import window
 from ..sync.scheduler import DOWNLOAD, scheduler
 
 router = APIRouter(prefix="/api/downloads", tags=["downloads"])
@@ -56,7 +59,9 @@ async def _stats(session, job: DownloadJob) -> DownloadStats:
     )
 
 
-async def _to_out(session, job: DownloadJob) -> DownloadJobOut:
+async def _to_out(
+    session, job: DownloadJob, zone: ZoneInfo | None = None
+) -> DownloadJobOut:
     out = DownloadJobOut.model_validate(job)
     account = await session.get(TelegramAccount, job.account_id)
     channel = await session.get(Channel, job.channel_id)
@@ -64,13 +69,20 @@ async def _to_out(session, job: DownloadJob) -> DownloadJobOut:
     out.channel_title = channel.title if channel else ""
     out.channel_tg_id = channel.tg_id if channel else 0
     out.stats = await _stats(session, job)
+
+    if zone is None:
+        zone = window.load_zone(await window.load_timezone(session))
+    now = datetime.now(UTC)
+    out.window_open = window.is_open(job.schedule_hours, zone, now)
+    out.next_window_at = window.next_opening(job.schedule_hours, zone, now)
     return out
 
 
 @router.get("", response_model=list[DownloadJobOut])
 async def list_downloads(session: SessionDep, _: ActiveUserDep) -> list[DownloadJobOut]:
+    zone = window.load_zone(await window.load_timezone(session))
     result = await session.execute(select(DownloadJob).order_by(DownloadJob.id))
-    return [await _to_out(session, job) for job in result.scalars()]
+    return [await _to_out(session, job, zone) for job in result.scalars()]
 
 
 @router.get("/{job_id}", response_model=DownloadJobOut)
@@ -159,6 +171,8 @@ async def create_download(
         local_path=local_path,
         remote=payload.remote.strip() if payload.remote else None,
         interval_hours=payload.interval_hours,
+        schedule_hours=payload.schedule_hours,
+        stop_outside_window=payload.stop_outside_window,
         enabled=payload.enabled,
     )
     session.add(job)
