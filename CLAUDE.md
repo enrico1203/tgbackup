@@ -53,7 +53,7 @@ an interval, but it starts again from the scan.
 ## Stack
 
 Backend: Python 3.14 Alpine, FastAPI, SQLAlchemy 2.0 async on SQLite, Alembic 1.18, Telethon 1.44,
-cryptg, rclone 1.74 (official static binary).
+cryptg, rclone 1.75 (official static binary).
 Frontend: React 19, Vite 8, TypeScript 7, react-router 8, TanStack Query 5, lucide-react.
 Infra: docker compose with `backend`, `frontend` (nginx), `cloudflared`.
 CI: GitHub Actions, Ruff 0.16 for the backend, Trivy for vulnerabilities.
@@ -461,7 +461,19 @@ purpose, the generated revisions are excluded.
 step that fails the build passes `--ignore-unfixed` and `.trivyignore`. A vulnerability with no
 released fix would otherwise block every pull request until an upstream project acts. Entries in
 `.trivyignore` carry a reason and an expiry date, and the gating steps are the only ones that read
-it, so nothing is hidden from the Security tab.
+it, so nothing is hidden from the Security tab. The file is empty since 2026-08-06: every entry it
+held was a Go module inside the rclone binary waiting for an rclone release, and 1.75.0 was it. The
+counterpart is that a finding **with** a fix is never ignored, it is applied, which is what moved
+`cryptography` to 50.0.0.
+
+**Bumping rclone is a byte-for-byte check, not a version bump** (done 2026-08-06 for 1.75.0). The
+uploader reads through `rclone cat --offset --count` and the scan parses `lsjson` one line at a
+time, so a change in either would corrupt what reaches Telegram or silently empty a listing, and
+neither would show up as an error. What was verified against the real remotes, in a throwaway
+container: `version`, `listremotes`, `check_remote` and `preview` still behave, and three 512KB
+slices read through a crypt remote at offsets 0, 1 MB and 2 GB hash identical under 1.74.4 and
+1.75.0. Building the old version into a temporary tag to compare against is the cheap way to get
+that answer.
 
 **Imported jobs arrive disabled, and their name is kept as exported** (since 2026-07-26). The
 source of an imported job belongs to the machine that produced the export. If that path does not

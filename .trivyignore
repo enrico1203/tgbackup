@@ -6,36 +6,10 @@
 #
 # An entry without exp: never expires and does not belong here. The date is what forces
 # somebody to look again.
-
-# gRPC-Go: xDS RBAC and HTTP/2 vulnerabilities, in google.golang.org/grpc v1.80.0 as
-# statically linked into the official rclone binary. Fixed in grpc 1.82.1, but rclone
-# 1.74.4 of 2026-07-08 is the latest release and still ships the old one: there is no
-# version of rclone to move to.
 #
-# It does not apply to how rclone is used here. The advisory affects a gRPC server that
-# accepts connections and enforces xDS RBAC policies, which is rclone's rc daemon
-# (rclone rcd, rclone serve). This project only ever starts one-shot subprocesses,
-# version, listremotes, lsjson and cat, from backend/app/rclone/client.py. No socket is
-# opened and no gRPC code runs at all.
-#
-# Recheck when a new rclone is released: if it links grpc 1.82.1 or later, bump
-# RCLONE_VERSION in backend/Dockerfile and delete these lines.
-GHSA-hrxh-6v49-42gf exp:2026-10-31
-
-# golang.org/x/text: norm.Iter can loop for ever on input holding invalid UTF-8 bytes,
-# in v0.38.0 as statically linked into the official rclone binary. Fixed in x/text
-# 0.39.0, and rclone master already carries 0.40.0, but 1.74.4 of 2026-07-08 is still
-# the latest release: as with grpc above, there is no version of rclone to move to.
-#
-# Unlike the grpc entry this one is not unreachable, and it is not claimed to be. rclone
-# normalises the names it reads, so a file whose name holds invalid UTF-8 on a remote
-# could in principle reach the loop. What it can cost is bounded: rclone runs here only
-# as one-shot subprocesses, each under the timeouts in config.py, so the worst outcome
-# is a scan that hangs until its ceiling and a job that fails. No memory is corrupted,
-# nothing is executed and nothing is disclosed. The names come from the user's own
-# remotes in a self-hosted application, so there is no third party to feed them either.
-#
-# Recheck at the same time as the grpc entry: master has both fixes, so the next rclone
-# release should clear the two of them together.
-CVE-2026-56852 exp:2026-10-31
-GHSA-jpjm-c3r5-q96r exp:2026-10-31
+# Empty since 2026-08-06. The three entries that used to live here, the gRPC-Go xDS RBAC
+# advisory and the two golang.org/x/text ones, were all in the Go modules statically
+# linked into the official rclone binary, and all three were waiting on a release of
+# rclone that carried the fixes. rclone 1.75.0 is that release: it links x/text 0.40.0
+# and grpc 1.84.0-dev, and the binary now reports no findings at all, not even MEDIUM.
+# The entries were deleted rather than left to expire, which is what the date was for.

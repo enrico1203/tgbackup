@@ -18,7 +18,7 @@ FROM alpine:3.24 AS rclone
 # archives the same way, amd64 and arm64: the published image is one manifest holding
 # both. The default is only there for a builder old enough not to set it.
 ARG TARGETARCH=amd64
-ARG RCLONE_VERSION=1.74.4
+ARG RCLONE_VERSION=1.75.0
 RUN apk add --no-cache curl unzip \
     && curl -fsSL -o /tmp/rclone.zip \
         "https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-${TARGETARCH}.zip" \
