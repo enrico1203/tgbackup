@@ -290,8 +290,17 @@ class Scheduler:
                 )
 
     async def _slow_loop(self) -> None:
-        """The checks that belong on a clock of hours, not of seconds."""
+        """The checks that belong on a clock of hours, not of seconds.
+
+        It waits a full tick before the first pass, and that is not a detail. At startup
+        `reset_stale` has just put every job back to idle and the scheduler has not yet
+        started the ones that were running: a silence check in that instant sees jobs that
+        are between two states and reports runs that are about to resume. Waiting also
+        means a deploy never produces an alarm, the same reason no report is sent while
+        the process is shutting down.
+        """
         while True:
+            await asyncio.sleep(settings.watcher_tick_seconds)
             try:
                 await self._check_silence()
             except Exception:
@@ -300,7 +309,6 @@ class Scheduler:
                 await self._check_channels()
             except Exception:
                 log.exception("Error in the scheduled maintenance check")
-            await asyncio.sleep(settings.watcher_tick_seconds)
 
     async def start(self) -> None:
         await self.reset_stale()
