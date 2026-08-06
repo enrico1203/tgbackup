@@ -19,7 +19,9 @@ import type {
   NotifyPreferences,
   RcloneStatus,
   SchedulePreferences,
+  VersionInfo,
 } from "../lib/types";
+import { APP_VERSION, highest, isOutdated } from "../lib/version";
 import RemoteBrowser from "../components/RemoteBrowser";
 import { Alert, Card, CardHead, Field, Pill, Spinner } from "../components/ui";
 
@@ -316,6 +318,67 @@ function Bandwidth() {
   );
 }
 
+/** What this installation runs, next to what Docker Hub publishes. The dashboard banner
+ *  only appears when there is something to update, and the version somebody wants to
+ *  read is usually the one they are on: this is where it is written down. */
+function Version() {
+  const { data } = useQuery({
+    queryKey: ["version"],
+    queryFn: () => api.get<VersionInfo>("/api/version"),
+    staleTime: 30 * 60 * 1000,
+  });
+
+  const latest = highest(data?.latest_backend ?? null, data?.latest_frontend ?? null);
+  const outdated =
+    isOutdated(data?.backend, data?.latest_backend) ||
+    isOutdated(APP_VERSION, data?.latest_frontend);
+
+  return (
+    <Card>
+      <CardHead title="Version">
+        {latest === null ? (
+          <Pill tone="mute">Not checked</Pill>
+        ) : outdated ? (
+          <Pill tone="warn">{latest} available</Pill>
+        ) : (
+          <Pill tone="ok">
+            <CheckCircle2 size={11} />
+            Up to date
+          </Pill>
+        )}
+      </CardHead>
+
+      <div className="card-body">
+        <p style={{ margin: 0, color: "var(--muted)", maxWidth: "70ch" }}>
+          The two images are published together on Docker Hub and pulled separately, so
+          each one carries the version it was built from. The tags are read at most once
+          every six hours and nothing else is sent: the check asks which releases exist,
+          it says nothing about this installation.
+        </p>
+
+        <div className="row wrap" style={{ gap: 24, fontSize: 12.5 }}>
+          <span style={{ color: "var(--muted)" }}>
+            backend <span className="mono">{data?.backend ?? "unknown"}</span>
+          </span>
+          <span style={{ color: "var(--muted)" }}>
+            interface <span className="mono">{APP_VERSION}</span>
+          </span>
+          <span style={{ color: "var(--muted)" }}>
+            published <span className="mono">{latest ?? "unknown"}</span>
+          </span>
+          {data?.checked_at ? (
+            <span style={{ color: "var(--muted)" }}>
+              checked {formatDateTime(data.checked_at)}
+            </span>
+          ) : null}
+        </div>
+
+        {data?.error ? <Alert tone="info">Docker Hub could not be reached: {data.error}</Alert> : null}
+      </div>
+    </Card>
+  );
+}
+
 export default function Settings() {
   const queryClient = useQueryClient();
   const [content, setContent] = useState("");
@@ -524,6 +587,7 @@ export default function Settings() {
       <Notifications />
       <Timezone />
       <Bandwidth />
+      <Version />
 
       {browsing ? (
         <RemoteBrowser remote={browsing} onClose={() => setBrowsing(null)} />

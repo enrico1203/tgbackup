@@ -80,6 +80,8 @@ for changing the code.
 - **Notifications**: a report at the end of a run, in the Saved Messages of a Telegram account.
 - **Export and import**: the index of a channel travels to another machine in one file, so that
   machine can restore everything the channel holds.
+- **Update notice**: the dashboard says so when the images published on Docker Hub are newer than
+  what this installation runs, naming which of the two is behind.
 
 Photos and videos are always sent as documents, never as media: no recompression.
 
@@ -348,6 +350,13 @@ The interface answers on `http://127.0.0.1:8081` and on the Cloudflare tunnel ho
 Initial credentials `admin` / `admin`, password change is mandatory on first sign in.
 
 ## Updating
+
+The dashboard carries a banner when a newer release exists: the backend reads the tags of the two
+Docker Hub repositories, at most once every six hours, and each image knows the version it was built
+from. Backend and interface are reported separately, since they are pulled separately and one can
+be older than the other. Nothing about the installation is sent, and a build from the sources is
+"dev": it is not a release and never claims to be out of date. The exact versions are on the
+Settings page, banner or no banner.
 
 From the published images:
 

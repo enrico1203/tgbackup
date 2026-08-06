@@ -441,3 +441,11 @@ export interface ProgressFrame {
   downloads: DownloadProgress[];
   restores: RestoreProgress[];
 }
+
+export interface VersionInfo {
+  backend: string;
+  latest_backend: string | null;
+  latest_frontend: string | null;
+  checked_at: string | null;
+  error: string | null;
+}

@@ -1,6 +1,13 @@
 services:
   backend:
-    build: ./backend
+    # A build from the sources is "dev" and never claims to be out of date: it is not a
+    # release and there is nothing to compare it with. Setting APP_VERSION stamps the
+    # image with that version instead, which is how the update banner can be seen at
+    # work without publishing anything.
+    build:
+      context: ./backend
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
     restart: unless-stopped
     environment:
       APP_SECRET: ${APP_SECRET}
@@ -20,7 +27,10 @@ services:
       - tgbackup
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
     restart: unless-stopped
     depends_on:
       - backend

@@ -43,9 +43,15 @@ COPY app ./app
 COPY alembic.ini ./alembic.ini
 COPY alembic ./alembic
 
+# The version being published, passed in by release.yml from the git tag. It is what
+# the update check compares against Docker Hub, and a build that does not set it stays
+# "dev", which means "do not compare".
+ARG APP_VERSION=dev
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    DATA_DIR=/data
+    DATA_DIR=/data \
+    APP_VERSION=${APP_VERSION}
 
 EXPOSE 8000
 

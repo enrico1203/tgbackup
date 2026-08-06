@@ -8,6 +8,7 @@ import { useProgress } from "../lib/progress";
 import type { Dashboard as DashboardData } from "../lib/types";
 import DownloadActivity, { downloadPhaseLabel } from "../components/DownloadActivity";
 import JobActivity, { phaseLabel } from "../components/JobActivity";
+import UpdateBanner from "../components/UpdateBanner";
 import { Card, CardHead, Empty, Pill, Sparkline, Stat } from "../components/ui";
 
 export default function Dashboard() {
@@ -27,6 +28,8 @@ export default function Dashboard() {
 
   return (
     <>
+      <UpdateBanner />
+
       <div className="stat-grid">
         <Stat
           label="Overall speed"

@@ -9,6 +9,11 @@ class Settings(BaseSettings):
     app_secret: str = "change-me-before-production"
     data_dir: Path = Path("/data")
 
+    # Written into the image by the release build, from the git tag being published.
+    # An image built from a working copy keeps "dev", which is what tells the update
+    # check to stay quiet: there is nothing to compare a working copy against.
+    app_version: str = "dev"
+
     token_ttl_hours: int = 24 * 30
 
     # Protocol ceiling: 8000 parts of 512KB.

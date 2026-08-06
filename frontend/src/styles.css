@@ -1334,6 +1334,71 @@ th.right {
   border-color: color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
+/* Update banner. Louder than an alert on purpose: it is the first thing on the
+   dashboard and it is the only place that will ever say a new version exists. */
+
+.update-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 16px 18px;
+  border-radius: var(--radius-card);
+  background: color-mix(in srgb, var(--warning) 15%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--warning) 55%, transparent);
+  box-shadow: var(--shadow-card);
+}
+
+.update-banner-icon {
+  color: var(--warning);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.update-banner-body {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  flex: 1;
+}
+
+.update-banner-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.update-banner-text {
+  font-size: 13px;
+  color: var(--muted);
+  max-width: 78ch;
+}
+
+.update-banner-command {
+  font-size: 12.5px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  border-radius: var(--radius-control);
+  padding: 5px 9px;
+  justify-self: start;
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.update-banner .btn {
+  flex-shrink: 0;
+}
+
+@media (max-width: 560px) {
+  .update-banner {
+    flex-wrap: wrap;
+  }
+
+  .update-banner .btn {
+    margin-left: 36px;
+  }
+}
+
 /* Modal windows */
 
 .modal-backdrop {

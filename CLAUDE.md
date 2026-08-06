@@ -70,7 +70,7 @@ backend/
     maintenance.py (check of a channel, rebuild of the index from it)
     notify.py (report at the end of a run, to Saved Messages)
     api/       auth accounts jobs downloads files explorer dashboard export maintenance
-               preferences rclone ws
+               preferences rclone version ws
     telegram/  manager.py (client registry, peers) fast_transfer.py (parallel upload/download)
                patches.py (the changes made to Telethon from the outside)
     rclone/    client.py (streaming lsjson, ranged cat, rcat, touch, config on disk)
@@ -80,7 +80,7 @@ frontend/src/
   pages/     Login ChangePassword Dashboard Jobs Downloads Accounts Explorer Files Runs
              Export Maintenance Settings
   components/ Shell ui JobActivity DownloadActivity RemoteBrowser ChannelPicker
-              ScheduleGrid
+              ScheduleGrid UpdateBanner
   lib/       api auth progress types format theme channels
 .github/
   workflows/ ci.yml trivy.yml release.yml
@@ -403,6 +403,20 @@ exception `_upload_with_retry` already knows how to handle by rebuilding the rea
 slice again. The value has to clear what Telethon may legitimately spend inside one call: it retries
 `request_retries` times, 5 by default, sleeping up to `flood_sleep_threshold`, 60 s by default, on
 each flood wait, so around 300 s of honest waiting.
+
+**Update banner** (`api/version.py`, `components/UpdateBanner.tsx`): an installation nobody
+updates is the normal outcome of self-hosting, because nothing on the machine knows a new image
+exists. The version each image was built from is baked in at build time, `APP_VERSION` as a build
+arg that becomes an environment variable on the backend and `VITE_APP_VERSION` in the bundle on the
+frontend, filled in by `release.yml` from the git tag. The backend reads the tags of the two Docker
+Hub repositories, keeps the highest that reads as X.Y.Z and caches the answer for six hours, in
+memory and not in a column: a restart costing one extra pair of requests is cheaper than a
+migration. The two halves are compared separately because they are pulled separately, and the
+banner names the one that is behind. A build from the sources is `dev` and never warns, having
+nothing to compare itself with, which is why `docker-compose.yml` takes `APP_VERSION` as a build arg
+for whoever wants to see the banner work. A check that cannot reach Docker Hub keeps the previous
+answer, carries the reason on the response and retries in fifteen minutes rather than six hours; the
+banner simply does not appear, because a warning built on a doubt is a warning nobody trusts.
 
 **Secrets**: `api_hash`, Telegram sessions and `rclone.conf` are encrypted with Fernet derived from
 `APP_SECRET`. Changing `APP_SECRET` makes them unreadable. The `rclone.conf` is returned in clear to

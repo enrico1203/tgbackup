@@ -17,8 +17,10 @@ from .api import (
     maintenance,
     preferences,
     rclone,
+    version,
     ws,
 )
+from .config import settings
 from .db import SessionLocal, engine
 from .migrate import upgrade_database
 from .models import User
@@ -69,7 +71,7 @@ async def lifespan(_: FastAPI):
     hub.start()
     await manager.restore_sessions()
     await scheduler.start()
-    log.info("tgbackup started")
+    log.info("tgbackup %s started", settings.app_version)
 
     yield
 
@@ -79,7 +81,7 @@ async def lifespan(_: FastAPI):
     await engine.dispose()
 
 
-app = FastAPI(title="tgbackup", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="tgbackup", version=settings.app_version, lifespan=lifespan)
 
 app.include_router(auth.router)
 app.include_router(accounts.router)
@@ -92,6 +94,7 @@ app.include_router(export.router)
 app.include_router(maintenance.router)
 app.include_router(preferences.router)
 app.include_router(rclone.router)
+app.include_router(version.router)
 app.include_router(ws.router)
 
 

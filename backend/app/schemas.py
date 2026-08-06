@@ -638,3 +638,17 @@ class DashboardOut(BaseModel):
     bytes_total: int
     bytes_uploaded: int
     recent_runs: list[JobRunOut]
+
+
+# Version
+
+
+class VersionOut(BaseModel):
+    # What this backend was built as. The interface knows its own version by itself,
+    # baked in at build time, since the two images are published separately and one of
+    # them can perfectly well be older than the other.
+    backend: str
+    latest_backend: str | None
+    latest_frontend: str | None
+    checked_at: datetime | None
+    error: str | None
