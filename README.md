@@ -354,9 +354,8 @@ Initial credentials `admin` / `admin`, password change is mandatory on first sig
 The dashboard carries a banner when a newer release exists: the backend reads the tags of the two
 Docker Hub repositories, at most once every six hours, and each image knows the version it was built
 from. Backend and interface are reported separately, since they are pulled separately and one can
-be older than the other. Nothing about the installation is sent, and a build from the sources is
-"dev": it is not a release and never claims to be out of date. The exact versions are on the
-Settings page, banner or no banner.
+be older than the other. Nothing about the installation is sent. The exact versions are
+on the Settings page, banner or no banner.
 
 From the published images:
 
@@ -369,8 +368,15 @@ From the sources:
 
 ```bash
 git pull
-docker compose up -d --build
+APP_VERSION="$(git describe --tags --always --dirty | sed s/^v//)" \
+  docker compose up -d --build
 ```
+
+`APP_VERSION` is what the images tell the update banner they are. It is taken from git rather than
+written down, so it can never claim something the working copy has stopped being: on a checkout
+sitting exactly on a release tag it is that version, and anywhere else it is a description of the
+commit, which is not a version and is compared with nothing. Leaving it out builds the images as
+"dev", which works exactly the same and simply never mentions updates.
 
 The database migrates itself. The backend runs the pending Alembic revisions at start, so a version
 that adds a column or an index needs nothing beyond the rebuild, and starting a version that changes

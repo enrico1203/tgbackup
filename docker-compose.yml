@@ -1,9 +1,13 @@
 services:
   backend:
-    # A build from the sources is "dev" and never claims to be out of date: it is not a
-    # release and there is nothing to compare it with. Setting APP_VERSION stamps the
-    # image with that version instead, which is how the update banner can be seen at
-    # work without publishing anything.
+    # The version the update banner compares with Docker Hub. It is passed in on the
+    # command line and comes from git, never written down here or in .env: a number kept
+    # by hand goes stale at the first release nobody remembers to copy, and the banner
+    # would then announce an update to the version already running. `git describe` says
+    # 0.6.0 only on a working copy sitting exactly on v0.6.0; one commit further on it
+    # says 0.6.0-1-gabc1234, which does not read as X.Y.Z and is compared with nothing.
+    #   APP_VERSION="$(git describe --tags --always --dirty | sed s/^v//)" \
+    #     docker compose up -d --no-deps --build backend frontend
     build:
       context: ./backend
       args:

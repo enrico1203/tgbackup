@@ -37,7 +37,9 @@ backend and interrupts running jobs. Use `--no-deps`.
 else is half done: the images on Docker Hub and the release are what other installations see.
 
 ```
-docker compose up -d --no-deps --build backend frontend   # deploy, then read the log
+# The version stamped on the images comes from git, never from a number kept by hand.
+APP_VERSION="$(git describe --tags --always --dirty | sed s/^v//)" \
+  docker compose up -d --no-deps --build backend frontend # deploy, then read the log
 git push origin main                                      # after committing
 git tag -a vX.Y.Z -m "tgbackup X.Y.Z ..." && git push origin vX.Y.Z
 gh release create vX.Y.Z --verify-tag --title "tgbackup X.Y.Z" --notes-file <notes>
@@ -412,9 +414,16 @@ frontend, filled in by `release.yml` from the git tag. The backend reads the tag
 Hub repositories, keeps the highest that reads as X.Y.Z and caches the answer for six hours, in
 memory and not in a column: a restart costing one extra pair of requests is cheaper than a
 migration. The two halves are compared separately because they are pulled separately, and the
-banner names the one that is behind. A build from the sources is `dev` and never warns, having
-nothing to compare itself with, which is why `docker-compose.yml` takes `APP_VERSION` as a build arg
-for whoever wants to see the banner work. A check that cannot reach Docker Hub keeps the previous
+banner names the one that is behind. What a build from the sources stamps comes from
+`git describe` on the deploy command and from nowhere else. A number kept in `.env` was the obvious
+place for it and is exactly wrong: it is right until the first release that does not think to copy
+it, and from then on the installation announces an update to the version it is already running,
+which is the one failure mode a banner must not have. `git describe` cannot drift, because it
+describes the tree being built: on a working copy sitting exactly on `v0.6.0` it says `0.6.0`, one
+commit further on it says `0.6.0-1-gabc1234`, which does not read as X.Y.Z and is therefore compared
+with nothing. So the banner reaches an installation that stayed on a release while a newer one was
+published, and stays quiet on a working copy that is ahead of every release, which is the honest
+answer in both cases. A check that cannot reach Docker Hub keeps the previous
 answer, carries the reason on the response and retries in fifteen minutes rather than six hours; the
 banner simply does not appear, because a warning built on a doubt is a warning nobody trusts.
 
