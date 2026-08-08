@@ -1,5 +1,6 @@
 import { formatBytes, formatDuration, formatSpeed } from "../lib/format";
 import type { JobProgress } from "../lib/types";
+import FloodNotice, { isHeld } from "./FloodNotice";
 import { ProgressBar } from "./ui";
 
 export function phaseLabel(phase: string): string {
@@ -29,6 +30,7 @@ export default function JobActivity({ progress }: { progress: JobProgress }) {
   const files = progress.scanned_files ?? 0;
   const dirs = progress.scanned_dirs ?? 0;
   const bytes = progress.scanned_bytes ?? 0;
+  const held = isHeld(progress);
 
   if (progress.phase === "scan") {
     return (
@@ -89,9 +91,19 @@ export default function JobActivity({ progress }: { progress: JobProgress }) {
           ? ` (part ${progress.current_part} of ${progress.current_parts})`
           : ""}
       </div>
-      <ProgressBar done={progress.bytes_done} total={progress.bytes_total} />
+      <FloodNotice
+        seconds={progress.flood_wait_seconds}
+        waits={progress.flood_waits}
+      />
+      <ProgressBar
+        done={progress.bytes_done}
+        total={progress.bytes_total}
+        tone={held ? "danger" : undefined}
+      />
       <div className="row wrap num" style={{ gap: 20, fontSize: 12.5 }}>
-        <strong>{formatSpeed(progress.speed_bps)}</strong>
+        <strong style={held ? { color: "var(--danger)" } : undefined}>
+          {held ? "held" : formatSpeed(progress.speed_bps)}
+        </strong>
         <span style={{ color: "var(--muted)" }}>
           {formatBytes(progress.bytes_done)} of {formatBytes(progress.bytes_total)}
         </span>

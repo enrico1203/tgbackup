@@ -49,6 +49,7 @@ from ..security import (
 )
 from ..sync.restore import cancel_restore, restore_file, restore_folder
 from ..telegram.fast_transfer import MAX_CONNECTIONS, stream_document
+from ..telegram.flood import FloodGate
 from ..telegram.manager import manager
 from ..telegram.throttle import installation_limiter
 
@@ -397,6 +398,11 @@ async def _stream_file(
     if lock.locked():
         log.info("Browser download of %s waiting for account %d", label, account_id)
 
+    # No panel to show it on, this one goes straight to the browser, but the gate is what
+    # keeps a flood wait from ending the response: without it the senders would raise and
+    # the file would arrive truncated, which is worse than arriving late.
+    flood = FloodGate(f"browser download of {label}")
+
     async with lock:
         for index, (message_id, part_size, part_index) in enumerate(parts):
             messages = await client.get_messages(peer, ids=message_id)
@@ -419,6 +425,7 @@ async def _stream_file(
                     max_connections=max_connections,
                     # A download to a browser spends the same line as everything else.
                     limiter=installation_limiter(),
+                    flood=flood,
                 )
             ) as stream:
                 async for chunk in stream:

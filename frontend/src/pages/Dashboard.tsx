@@ -7,6 +7,7 @@ import { formatBytes, formatDateTime, formatSpeed, percent } from "../lib/format
 import { useProgress } from "../lib/progress";
 import type { Dashboard as DashboardData } from "../lib/types";
 import DownloadActivity, { downloadPhaseLabel } from "../components/DownloadActivity";
+import { isHeld } from "../components/FloodNotice";
 import JobActivity, { phaseLabel } from "../components/JobActivity";
 import UpdateBanner from "../components/UpdateBanner";
 import { Card, CardHead, Empty, Pill, Sparkline, Stat } from "../components/ui";
@@ -79,11 +80,17 @@ export default function Dashboard() {
                   </div>
                   <Pill
                     tone={
-                      job.phase === "upload" ? "ok" : job.phase === "waiting" ? "mute" : "warn"
+                      isHeld(job)
+                        ? "bad"
+                        : job.phase === "upload"
+                          ? "ok"
+                          : job.phase === "waiting"
+                            ? "mute"
+                            : "warn"
                     }
                     live={job.phase !== "waiting"}
                   >
-                    {phaseLabel(job.phase)}
+                    {isHeld(job) ? "Flood wait" : phaseLabel(job.phase)}
                   </Pill>
                 </div>
 
@@ -104,11 +111,17 @@ export default function Dashboard() {
                   </div>
                   <Pill
                     tone={
-                      job.phase === "download" ? "ok" : job.phase === "waiting" ? "mute" : "warn"
+                      isHeld(job)
+                        ? "bad"
+                        : job.phase === "download"
+                          ? "ok"
+                          : job.phase === "waiting"
+                            ? "mute"
+                            : "warn"
                     }
                     live={job.phase !== "waiting"}
                   >
-                    {downloadPhaseLabel(job.phase)}
+                    {isHeld(job) ? "Flood wait" : downloadPhaseLabel(job.phase)}
                   </Pill>
                 </div>
 

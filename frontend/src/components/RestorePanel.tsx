@@ -4,6 +4,7 @@ import { Square } from "lucide-react";
 import { api } from "../lib/api";
 import { formatBytes, formatDuration, formatSpeed } from "../lib/format";
 import { useProgress } from "../lib/progress";
+import FloodNotice, { isHeld } from "./FloodNotice";
 import { Alert, Card, CardHead, Pill, ProgressBar } from "./ui";
 
 const PHASES: Record<string, { label: string; tone: "ok" | "bad" | "mute" | "accent" }> = {
@@ -33,6 +34,7 @@ export default function RestorePanel() {
         {items.map((restore) => {
           const phase = PHASES[restore.phase] ?? { label: "Running", tone: "accent" as const };
           const many = restore.files_total > 1;
+          const held = isHeld(restore);
           return (
             <div key={restore.restore_id} style={{ display: "grid", gap: 8 }}>
               <div className="row" style={{ justifyContent: "space-between" }}>
@@ -59,7 +61,13 @@ export default function RestorePanel() {
                 {restore.target_path}
               </div>
 
-              <ProgressBar done={restore.bytes_done} total={restore.bytes_total} />
+              <FloodNotice seconds={restore.flood_wait_seconds} waits={restore.flood_waits} />
+
+              <ProgressBar
+                done={restore.bytes_done}
+                total={restore.bytes_total}
+                tone={held ? "danger" : undefined}
+              />
 
               <div
                 className="row wrap num"
@@ -74,7 +82,9 @@ export default function RestorePanel() {
                     {restore.files_total.toLocaleString("en-US")} files
                   </span>
                 ) : null}
-                <span>{formatSpeed(restore.speed_bps)}</span>
+                <span style={held ? { color: "var(--danger)" } : undefined}>
+                  {held ? "held" : formatSpeed(restore.speed_bps)}
+                </span>
                 <span>{formatDuration(restore.eta_seconds)} left</span>
                 {restore.failed > 0 ? (
                   <span style={{ color: "var(--danger)" }}>

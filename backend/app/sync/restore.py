@@ -37,6 +37,7 @@ from ..models import (
     TelegramAccount,
 )
 from ..telegram.fast_transfer import MAX_CONNECTIONS, download_document, stream_document
+from ..telegram.flood import FloodGate
 from ..telegram.manager import manager
 from ..telegram.throttle import installation_limiter
 from .destination import DestinationError, LocalDestination, RcloneDestination
@@ -288,6 +289,7 @@ async def _restore_one(
     cancel: StopSignal,
     max_connections: int,
     limiter,
+    flood: FloodGate,
 ) -> None:
     async with destination.sink(rel_path, item.size, item.mtime_ns) as sink:
         for part_index, offset, part_size, message_id in item.parts:
@@ -314,6 +316,7 @@ async def _restore_one(
                     cancel=cancel,
                     max_connections=max_connections,
                     limiter=limiter,
+                    flood=flood,
                 )
             else:
                 # A remote is a pipe: parallel download, bytes handed over in order.
@@ -326,6 +329,7 @@ async def _restore_one(
                         cancel=cancel,
                         max_connections=max_connections,
                         limiter=limiter,
+                        flood=flood,
                     )
                 ) as stream:
                     async for chunk in stream:
@@ -355,6 +359,10 @@ async def _run_restore(
     # No job ceiling here, this was asked for by hand, but the limit of the installation
     # still applies: it is there to keep the line usable.
     limiter = installation_limiter()
+    # A restore is watched by whoever asked for it, so being held matters here even more
+    # than on a job: the panel says so rather than showing a bar that stopped moving.
+    flood = FloodGate(f"restore to {progress.target_path}", cancel=cancel)
+    progress.flood = flood
 
     try:
         client = await manager.get_client(account_id)
@@ -373,7 +381,7 @@ async def _run_restore(
                 async with lock:
                     await _restore_one(
                         client, entity, item, destination, rel_path,
-                        progress, cancel, max_connections, limiter,
+                        progress, cancel, max_connections, limiter, flood,
                     )
             except asyncio.CancelledError:
                 # The signal, not the task: raised by the transfer when the user asked to

@@ -735,6 +735,17 @@ input::placeholder {
   transition: width 0.4s ease;
 }
 
+/* A transfer held by a flood wait. The bar keeps its position, since the bytes already
+   sent are still sent, and changes colour: what stopped is the movement, not the work. */
+.bar.danger .bar-fill,
+.bar.danger .bar-cap {
+  background: var(--danger);
+}
+
+.bar.danger .bar-cap {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger) 25%, transparent);
+}
+
 /* The emphasised end point makes the position readable at a glance. */
 .bar-cap {
   position: absolute;

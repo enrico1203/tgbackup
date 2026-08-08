@@ -393,6 +393,11 @@ export interface JobProgress {
   speed_bps: number;
   eta_seconds: number | null;
   elapsed_seconds: number;
+  /** How long this transfer is held by a flood wait, null when it is not. Optional:
+   * an older backend does not send it and the interface simply shows nothing. */
+  flood_wait_seconds?: number | null;
+  flood_wait_total?: number | null;
+  flood_waits?: number;
 }
 
 export interface DownloadProgress {
@@ -416,6 +421,11 @@ export interface DownloadProgress {
   speed_bps: number;
   eta_seconds: number | null;
   elapsed_seconds: number;
+  /** How long this transfer is held by a flood wait, null when it is not. Optional:
+   * an older backend does not send it and the interface simply shows nothing. */
+  flood_wait_seconds?: number | null;
+  flood_wait_total?: number | null;
+  flood_waits?: number;
 }
 
 export interface RestoreProgress {
@@ -433,6 +443,11 @@ export interface RestoreProgress {
   errors: string[];
   speed_bps: number;
   eta_seconds: number | null;
+  /** How long this transfer is held by a flood wait, null when it is not. Optional:
+   * an older backend does not send it and the interface simply shows nothing. */
+  flood_wait_seconds?: number | null;
+  flood_wait_total?: number | null;
+  flood_waits?: number;
 }
 
 export interface ProgressFrame {

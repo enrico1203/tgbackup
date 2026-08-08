@@ -14,6 +14,7 @@ import time
 from dataclasses import dataclass, field
 
 from ..config import settings
+from ..telegram.flood import FloodGate, snapshot_of
 
 log = logging.getLogger(__name__)
 
@@ -78,6 +79,10 @@ class JobProgress(SpeedMeter):
     started_at: float = field(default_factory=time.monotonic)
     speed_bps: float = 0.0
 
+    # The flood backoff of this run, when it has reached the transfer. A held transfer is
+    # running and moving nothing, which looks exactly like a slow one until it is said.
+    flood: FloodGate | None = None
+
     _window_bytes: int = 0
     _window_start: float = field(default_factory=time.monotonic)
 
@@ -97,6 +102,7 @@ class JobProgress(SpeedMeter):
 
     def snapshot(self) -> dict:
         return {
+            **snapshot_of(self.flood),
             "job_id": self.job_id,
             "name": self.name,
             "phase": self.phase,
@@ -153,6 +159,8 @@ class DownloadProgress(SpeedMeter):
     started_at: float = field(default_factory=time.monotonic)
     speed_bps: float = 0.0
 
+    flood: FloodGate | None = None
+
     _window_bytes: int = 0
     _window_start: float = field(default_factory=time.monotonic)
 
@@ -172,6 +180,7 @@ class DownloadProgress(SpeedMeter):
 
     def snapshot(self) -> dict:
         return {
+            **snapshot_of(self.flood),
             "job_id": self.job_id,
             "name": self.name,
             "phase": self.phase,
@@ -224,12 +233,15 @@ class RestoreProgress(SpeedMeter):
     # decide when to forget it.
     ended_at: float | None = None
 
+    flood: FloodGate | None = None
+
     _window_bytes: int = 0
     _window_start: float = field(default_factory=time.monotonic)
 
     def snapshot(self) -> dict:
         remaining = max(0, self.bytes_total - self.bytes_done)
         return {
+            **snapshot_of(self.flood),
             "restore_id": self.restore_id,
             "file_name": self.file_name,
             "target_path": self.target_path,

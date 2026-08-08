@@ -34,11 +34,13 @@ class Settings(BaseSettings):
     # A single Telegram call that never comes back. Telethon returns a bare future for
     # every request and never times it out, so a part whose answer the server drops
     # would be awaited for ever, with the job holding its account slot and moving no
-    # bytes. The value has to clear what Telethon may legitimately spend inside one
-    # call: it retries `request_retries` times, 5 by default, sleeping up to
-    # `flood_sleep_threshold`, 60s by default, on each flood wait, so about 300s of
-    # honest waiting. Ten minutes leaves room above that and is still far below any
-    # speed a 512KB part could arrive at.
+    # bytes. The value has to clear what may legitimately be spent inside one call. On a
+    # part that is now the round trip and nothing else, since `send_transfer_request`
+    # owns the retries and answers a flood wait outside the awaited future; on the calls
+    # that still go through Telethon it is `request_retries` attempts, 5 by default,
+    # sleeping up to `flood_sleep_threshold` on each flood wait, so around 300s. Ten
+    # minutes leaves room above that and is still far below any speed a 512KB part could
+    # arrive at.
     telegram_request_timeout: float = 600.0
 
     # rclone timeouts. These are safety nets against a remote that never answers, not

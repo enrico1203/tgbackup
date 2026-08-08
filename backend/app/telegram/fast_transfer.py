@@ -24,6 +24,16 @@ import os
 from collections.abc import Callable
 
 from telethon import TelegramClient, helpers
+from telethon.errors import (
+    FloodPremiumWaitError,
+    FloodWaitError,
+    InterdcCallErrorError,
+    InterdcCallRichErrorError,
+    RpcCallFailError,
+    RpcMcgetFailError,
+    ServerError,
+    TimedOutError,
+)
 from telethon.network import MTProtoSender
 from telethon.tl.alltlobjects import LAYER
 from telethon.tl.functions import InvokeWithLayerRequest
@@ -36,6 +46,7 @@ from telethon.tl.functions.upload import (
 from telethon.tl.types import Document, InputDocumentFileLocation, InputFile, InputFileBig
 
 from ..config import settings
+from .flood import FloodGate
 from .throttle import ChainedLimiter
 
 log = logging.getLogger(__name__)
@@ -80,6 +91,61 @@ async def call_with_timeout(awaitable, what: str):
         ) from None
 
 
+# What Telethon retries by itself inside `_call`: the server is having a moment and the
+# same request usually goes through a second later.
+TRANSIENT_ERRORS = (
+    ServerError,
+    RpcCallFailError,
+    RpcMcgetFailError,
+    InterdcCallErrorError,
+    InterdcCallRichErrorError,
+    TimedOutError,
+)
+TRANSIENT_RETRIES = 5
+TRANSIENT_DELAY = 2.0
+
+
+async def send_transfer_request(sender: MTProtoSender, request, what: str, flood: FloodGate | None):
+    """Sends one part request and decides by itself what to do when it comes back badly.
+
+    `client._call` is deliberately bypassed. It would give three things this loop has to
+    take back. It counts a flood wait as a used attempt, so a limit that outlasts five
+    sleeps turns into `ValueError: Request was unsuccessful 6 time(s)`, an exception that
+    names nothing and lets the caller destroy a slice that was only being asked to wait.
+    It records the wait in `_flood_waited_requests`, keyed by request type on the shared
+    client, so every later part of every job sleeps up front for a limit it has not hit.
+    And it decides the delay per request, while the thing being limited is the account:
+    the gate is what makes twenty connections wait as one.
+
+    A raw `MTProtoSender.send` hands back the future the receive loop resolves, raising
+    the actual RPC error, which is all this needs.
+    """
+    attempt = 0
+    while True:
+        if flood is not None:
+            await flood.hold()
+        try:
+            result = await call_with_timeout(sender.send(request), what)
+        except (FloodWaitError, FloodPremiumWaitError) as exc:
+            if flood is None:
+                raise
+            await flood.flooded(exc.seconds)
+            continue
+        except TRANSIENT_ERRORS as exc:
+            attempt += 1
+            if attempt >= TRANSIENT_RETRIES:
+                raise
+            log.warning(
+                "Telegram is having internal issues on %s (%s), attempt %d",
+                what, type(exc).__name__, attempt + 1,
+            )
+            await asyncio.sleep(TRANSIENT_DELAY)
+            continue
+        if flood is not None:
+            flood.cleared()
+        return result
+
+
 class _UploadSender:
     def __init__(
         self,
@@ -91,11 +157,13 @@ class _UploadSender:
         index: int,
         stride: int,
         on_part: ProgressCallback | None,
+        flood: FloodGate | None = None,
     ) -> None:
         self._client = client
         self._sender = sender
         self._stride = stride
         self._on_part = on_part
+        self._flood = flood
         self._pending: asyncio.Task | None = None
         if big:
             self._request = SaveBigFilePartRequest(file_id, index, part_count, b"")
@@ -111,9 +179,8 @@ class _UploadSender:
 
     async def _send(self, data: bytes) -> None:
         self._request.bytes = data
-        await call_with_timeout(
-            self._client._call(self._sender, self._request),
-            f"part {self._request.file_part}",
+        await send_transfer_request(
+            self._sender, self._request, f"part {self._request.file_part}", self._flood
         )
         self._request.file_part += self._stride
         if self._on_part is not None:
@@ -151,19 +218,21 @@ class _DownloadSender:
         limit: int,
         stride: int,
         count: int,
+        flood: FloodGate | None = None,
     ) -> None:
         self._client = client
         self._sender = sender
         self._request = GetFileRequest(location, offset, limit)
         self._stride = stride
         self._remaining = count
+        self._flood = flood
 
     async def next(self) -> tuple[int, bytes] | None:
         if self._remaining <= 0:
             return None
         offset = self._request.offset
-        result = await call_with_timeout(
-            self._client._call(self._sender, self._request), f"the part at offset {offset}"
+        result = await send_transfer_request(
+            self._sender, self._request, f"the part at offset {offset}", self._flood
         )
         self._remaining -= 1
         self._request.offset += self._stride
@@ -249,6 +318,7 @@ async def upload_slice(
     source: str = "",
     max_connections: int = MAX_CONNECTIONS,
     limiter: ChainedLimiter | None = None,
+    flood: FloodGate | None = None,
 ) -> InputFile | InputFileBig:
     """Uploads `length` bytes taken from `reader` and returns the Telegram handle.
 
@@ -258,6 +328,9 @@ async def upload_slice(
     `limiter`, when there is one, is asked before every chunk goes to a sender. This loop
     is the only place the whole upload passes through, whatever the source and however
     many connections are open, which is what makes one limit here a limit on everything.
+
+    `flood` is the shared answer to a flood wait: the senders all consult it, so a limit
+    found by one holds the whole file rather than being met again by the other nineteen.
     """
     if length <= 0:
         raise ValueError("The slice to upload is empty")
@@ -285,6 +358,7 @@ async def upload_slice(
             index,
             connections,
             on_progress,
+            flood,
         )
         for index in range(connections)
     ]
@@ -340,7 +414,10 @@ def _file_location(document: Document) -> InputDocumentFileLocation:
 
 
 async def _download_senders(
-    client: TelegramClient, document: Document, connections: int
+    client: TelegramClient,
+    document: Document,
+    connections: int,
+    flood: FloodGate | None = None,
 ) -> list[_DownloadSender]:
     """One sender per connection, each taking one part out of `connections`."""
     location = _file_location(document)
@@ -357,6 +434,7 @@ async def _download_senders(
             stride,
             # Parts assigned to this sender: index, index + connections, and so on.
             len(range(index, part_count, connections)),
+            flood,
         )
         for index in range(connections)
     ]
@@ -371,6 +449,7 @@ async def download_document(
     cancel=None,
     max_connections: int = MAX_CONNECTIONS,
     limiter: ChainedLimiter | None = None,
+    flood: FloodGate | None = None,
 ) -> int:
     """Downloads a document in parallel, writing it at `base_offset` inside `out_fd`.
 
@@ -379,7 +458,7 @@ async def download_document(
     """
     size = document.size
     connections = connection_count(size, max(1, min(max_connections, MAX_CONNECTIONS)))
-    senders = await _download_senders(client, document, connections)
+    senders = await _download_senders(client, document, connections, flood)
 
     written = 0
     lock = asyncio.Lock()
@@ -423,6 +502,7 @@ async def stream_document(
     cancel=None,
     max_connections: int = MAX_CONNECTIONS,
     limiter: ChainedLimiter | None = None,
+    flood: FloodGate | None = None,
 ):
     """Yields the bytes of a document in order, downloading them in parallel.
 
@@ -439,7 +519,7 @@ async def stream_document(
     """
     size = document.size
     connections = connection_count(size, max(1, min(max_connections, MAX_CONNECTIONS)))
-    senders = await _download_senders(client, document, connections)
+    senders = await _download_senders(client, document, connections, flood)
 
     window = STREAM_WINDOW_PARTS * DOWNLOAD_PART_SIZE
     ready: dict[int, bytes] = {}

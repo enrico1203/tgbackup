@@ -1,5 +1,6 @@
 import { formatBytes, formatDuration, formatSpeed } from "../lib/format";
 import type { DownloadProgress } from "../lib/types";
+import FloodNotice, { isHeld } from "./FloodNotice";
 import { ProgressBar } from "./ui";
 
 export function downloadPhaseLabel(phase: string): string {
@@ -25,6 +26,7 @@ export function downloadPhaseLabel(phase: string): string {
  * counters are shown instead of a bar stuck at zero. */
 export default function DownloadActivity({ progress }: { progress: DownloadProgress }) {
   const indexed = progress.indexed_files ?? 0;
+  const held = isHeld(progress);
 
   if (progress.phase === "index") {
     return (
@@ -96,9 +98,16 @@ export default function DownloadActivity({ progress }: { progress: DownloadProgr
           ? ` (part ${progress.current_part} of ${progress.current_parts})`
           : ""}
       </div>
-      <ProgressBar done={progress.bytes_done} total={progress.bytes_total} />
+      <FloodNotice seconds={progress.flood_wait_seconds} waits={progress.flood_waits} />
+      <ProgressBar
+        done={progress.bytes_done}
+        total={progress.bytes_total}
+        tone={held ? "danger" : undefined}
+      />
       <div className="row wrap num" style={{ gap: 20, fontSize: 12.5 }}>
-        <strong>{formatSpeed(progress.speed_bps)}</strong>
+        <strong style={held ? { color: "var(--danger)" } : undefined}>
+          {held ? "held" : formatSpeed(progress.speed_bps)}
+        </strong>
         <span style={{ color: "var(--muted)" }}>
           {formatBytes(progress.bytes_done)} of {formatBytes(progress.bytes_total)}
         </span>

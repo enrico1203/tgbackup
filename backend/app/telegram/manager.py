@@ -104,6 +104,13 @@ class TelegramManager:
             connection_retries=None,
             retry_delay=5,
             auto_reconnect=True,
+            # What a call raises once its attempts are spent. Telethon's default is
+            # `ValueError: Request was unsuccessful N time(s)`, which throws away the
+            # reason: a flood wait slept five times over comes out as that, and every
+            # `except FloodWaitError` in this application is bypassed by an exception
+            # that names nothing. Raising the last real error is what makes those
+            # handlers work, here and in maintenance, deletions and downloads.
+            raise_last_call_error=True,
         )
         await client.connect()
         if not await client.is_user_authorized():

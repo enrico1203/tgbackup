@@ -21,6 +21,7 @@ import {
 import { api } from "../lib/api";
 import { formatBytes, formatDateTime, formatInterval } from "../lib/format";
 import { useProgress } from "../lib/progress";
+import { isHeld } from "../components/FloodNotice";
 import JobActivity, { phaseLabel } from "../components/JobActivity";
 import ScheduleGrid, { ALWAYS, describeSchedule } from "../components/ScheduleGrid";
 import RemoteBrowser from "../components/RemoteBrowser";
@@ -516,7 +517,11 @@ function JobCard({ job, onEdit }: { job: Job; onEdit: (job: Job) => void }) {
     <Card>
       <CardHead title={job.name}>
         <div className="row" style={{ gap: 8 }}>
-          {running ? (
+          {running && isHeld(progress) ? (
+            <Pill tone="bad" live>
+              Flood wait
+            </Pill>
+          ) : running ? (
             <Pill
               tone={(progress?.phase ?? job.phase) === "waiting" ? "mute" : "ok"}
               live={(progress?.phase ?? job.phase) !== "waiting"}

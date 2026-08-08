@@ -31,6 +31,7 @@ from ..models import (
     utcnow,
 )
 from ..telegram.fast_transfer import MAX_CONNECTIONS, call_with_timeout, upload_slice
+from ..telegram.flood import FloodGate
 from ..telegram.manager import manager
 from ..telegram.throttle import limiter_for
 from . import window
@@ -184,6 +185,11 @@ class JobRunner:
 
         progress = hub.start_job(self.job_id, job_name)
         progress.phase = "scan"
+        # One gate for the whole run, so the backoff climbs across files instead of
+        # starting again at thirty seconds on every one of them, and the interface can
+        # say that a job at zero bytes is being held rather than being slow.
+        flood = FloodGate(f"job {self.job_id}", cancel=self.cancel)
+        progress.flood = flood
 
         try:
             client = await manager.get_client(account_id)
@@ -219,7 +225,8 @@ class JobRunner:
                 progress.phase = "upload"
                 await self._set_phase("upload")
                 uploaded_files, uploaded_bytes = await self._upload_pending(
-                    client, entity, part_size, progress, source, max_connections, limiter
+                    client, entity, part_size, progress, source, max_connections, limiter,
+                    flood,
                 )
 
             async with SessionLocal() as session:
@@ -502,7 +509,7 @@ class JobRunner:
 
     async def _upload_pending(
         self, client, entity, part_size: int, progress, source, max_connections: int,
-        limiter,
+        limiter, flood,
     ) -> tuple[int, int]:
         async with SessionLocal() as session:
             totals = await session.execute(
@@ -544,7 +551,7 @@ class JobRunner:
             try:
                 sent = await self._upload_one(
                     client, entity, source, rel_path, name, size, part_size,
-                    progress, file_id, max_connections, limiter
+                    progress, file_id, max_connections, limiter, flood
                 )
             except JobCancelled:
                 async with SessionLocal() as session:
@@ -595,6 +602,7 @@ class JobRunner:
         file_id: int,
         max_connections: int,
         limiter,
+        flood,
     ) -> int:
         """Uploads a file, splitting it above the threshold. Returns the number of parts.
 
@@ -612,25 +620,12 @@ class JobRunner:
 
             handle = await self._upload_with_retry(
                 client, source, rel_path, offset, length, file_name, progress,
-                max_connections, limiter,
+                max_connections, limiter, flood,
             )
 
             caption = build_caption(rel_path, name, index, len(slices))
-            # The bytes are already on the server, this only posts the message, so the
-            # timeout is generous by a wide margin. It is here because it is the last
-            # call of the part that could hang for ever, and a part that hangs here
-            # stops the job just as surely as one that hangs while uploading.
-            message = await call_with_timeout(
-                client.send_file(
-                    entity,
-                    handle,
-                    caption=caption,
-                    # Photos and videos must stay documents: no recompression, no quality
-                    # loss, bytes identical to the original.
-                    force_document=True,
-                    attributes=[DocumentAttributeFilename(file_name)],
-                ),
-                f"the message carrying {file_name}",
+            message = await self._publish_part(
+                client, entity, handle, caption, file_name, flood
             )
 
             async with SessionLocal() as session:
@@ -647,9 +642,42 @@ class JobRunner:
 
         return len(slices)
 
+    async def _publish_part(self, client, entity, handle, caption, file_name: str, flood):
+        """Posts the message that turns an uploaded part into a file in the channel.
+
+        The bytes are already on the server, so this is only the message, which is why the
+        timeout is generous by a wide margin. It is here because it is the last call of a
+        part that could hang for ever, and one that hangs here stops the job just as surely
+        as one that hangs while uploading.
+
+        It goes through the same gate as the parts: a limited account is limited on this
+        call too, and a part whose bytes made it through only to lose the message would be
+        deleted and uploaded again from nothing on the next run.
+        """
+        while True:
+            if flood is not None:
+                await flood.hold()
+            try:
+                return await call_with_timeout(
+                    client.send_file(
+                        entity,
+                        handle,
+                        caption=caption,
+                        # Photos and videos must stay documents: no recompression, no
+                        # quality loss, bytes identical to the original.
+                        force_document=True,
+                        attributes=[DocumentAttributeFilename(file_name)],
+                    ),
+                    f"the message carrying {file_name}",
+                )
+            except FloodWaitError as exc:
+                if flood is None:
+                    raise
+                await flood.flooded(exc.seconds)
+
     async def _upload_with_retry(
         self, client, source, rel_path: str, offset: int, length: int, file_name: str,
-        progress, max_connections: int, limiter,
+        progress, max_connections: int, limiter, flood,
     ):
         attempt = 0
         while True:
@@ -667,10 +695,14 @@ class JobRunner:
                     source=f"{source.label}/{rel_path}",
                     max_connections=max_connections,
                     limiter=limiter,
+                    flood=flood,
                 )
             except FloodWaitError as exc:
-                log.warning("Flood wait of %ss while uploading %s", exc.seconds, file_name)
-                await asyncio.sleep(exc.seconds + 1)
+                # The senders answer a flood wait by themselves and never let one end a
+                # slice, so this is left for a limit met outside them, on opening the
+                # connections. The attempt is not counted: waiting is not failing.
+                attempt -= 1
+                await flood.flooded(exc.seconds)
             except asyncio.CancelledError:
                 raise JobCancelled() from None
             except Exception:

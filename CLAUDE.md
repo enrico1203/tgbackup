@@ -406,6 +406,31 @@ slice again. The value has to clear what Telethon may legitimately spend inside 
 `request_retries` times, 5 by default, sleeping up to `flood_sleep_threshold`, 60 s by default, on
 each flood wait, so around 300 s of honest waiting.
 
+**A flood wait is an instruction, not an error** (`telegram/flood.py`, measured 2026-08-08). Telethon
+sleeps a flood wait shorter than `flood_sleep_threshold` (60 s) and **counts the sleep as one of
+`request_retries`** (5), so an account limited at a steady 16 s exhausts its attempts and the call
+dies as `ValueError: Request was unsuccessful 6 time(s)`, which names nothing: the
+`except FloodWaitError` written for exactly this case never fires, the slice is destroyed, the file
+ends in `error`. Observed on the AnimeSUB job, a non-Premium account limited after 1.8 TB in eleven
+days: two days, 138,732 rejected requests, zero bytes uploaded, 72 files in `error`, while a Premium
+account on the same host kept going at 20 MB/s. So the transfer owns the policy.
+`send_transfer_request` bypasses `client._call` for the part requests and awaits the raw sender,
+which raises the real error. It takes back three things: a flood wait no longer consumes an attempt,
+it is no longer recorded in `_flood_waited_requests`, a per-client map keyed by request type that
+made every later part of every job sleep up front for a limit it had not hit, and the delay is no
+longer decided per request when the thing being limited is the account. `FloodGate` is one gate per
+run shared by all 20 connections, because twenty connections meeting the same limit one after
+another is the storm and not the cure: the first one held closes it for everybody, the ladder is
+30 s, 1, 2, 5, 10, 15, 30, 60 min and never shrinks while the waits keep coming, and it resets only
+after five clean minutes. Deliberately unbounded: a limit that lasts hours is answered in hours,
+because the alternative is the file marked `error` and a re-upload from nothing. What keeps that
+from being silent is the silence alarm, which reports a job that has stopped succeeding whatever the
+reason. `raise_last_call_error=True` on the client is the other half: it makes the handlers that
+were already written, in deletions, maintenance and downloads, see the error instead of the
+`ValueError`. The gate travels in the progress frame, `flood_wait_seconds`, and the interface paints
+the bar, the speed and the pill red, since a held transfer at zero bytes looked exactly like a slow
+one.
+
 **Update banner** (`api/version.py`, `components/UpdateBanner.tsx`): an installation nobody
 updates is the normal outcome of self-hosting, because nothing on the machine knows a new image
 exists. The version each image was built from is baked in at build time, `APP_VERSION` as a build

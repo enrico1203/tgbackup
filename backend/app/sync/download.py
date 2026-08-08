@@ -32,6 +32,7 @@ from .. import notify
 from ..db import SessionLocal
 from ..models import Channel, DownloadJob, DownloadRun, FileEntry, SyncJob, TelegramAccount, utcnow
 from ..telegram.fast_transfer import MAX_CONNECTIONS, download_document, stream_document
+from ..telegram.flood import FloodGate
 from ..telegram.manager import manager
 from ..telegram.throttle import limiter_for
 from . import window
@@ -161,6 +162,10 @@ class DownloadRunner:
 
         progress = hub.start_download(self.job_id, job_name)
         progress.phase = "index"
+        # One gate for the run, shared by every connection: a limited account is limited
+        # whichever way the bytes are going, and a held download says so in the interface.
+        flood = FloodGate(f"download job {self.job_id}", cancel=self.cancel)
+        progress.flood = flood
 
         try:
             client = await manager.get_client(account_id)
@@ -228,7 +233,8 @@ class DownloadRunner:
                 progress.phase = "download"
                 await self._set_phase("download")
                 files, written, failed, last_error = await self._download_all(
-                    client, peer, destination, missing, progress, max_connections, limiter
+                    client, peer, destination, missing, progress, max_connections,
+                    limiter, flood,
                 )
 
             async with SessionLocal() as session:
@@ -283,7 +289,7 @@ class DownloadRunner:
 
     async def _download_all(
         self, client, entity, destination, missing: list[IndexedFile], progress,
-        max_connections, limiter,
+        max_connections, limiter, flood,
     ) -> tuple[int, int, int, str | None]:
         files = 0
         written = 0
@@ -298,7 +304,8 @@ class DownloadRunner:
 
             try:
                 await self._download_one(
-                    client, entity, destination, item, progress, max_connections, limiter
+                    client, entity, destination, item, progress, max_connections,
+                    limiter, flood,
                 )
             except JobCancelled:
                 raise
@@ -317,7 +324,7 @@ class DownloadRunner:
 
     async def _download_one(
         self, client, entity, destination, item: IndexedFile, progress,
-        max_connections: int, limiter,
+        max_connections: int, limiter, flood,
     ) -> None:
         """Rebuilds one file at the destination from the parts of its message.
 
@@ -326,7 +333,7 @@ class DownloadRunner:
         in parallel; a remote is a pipe and takes the bytes in order, which the ordered
         stream provides without losing the parallel download.
         """
-        documents = await self._documents(client, entity, item)
+        documents = await self._documents(client, entity, item, flood)
 
         async with destination.sink(item.rel_path, item.size, item.mtime_ns) as sink:
             for part, document in zip(item.parts, documents, strict=True):
@@ -344,9 +351,11 @@ class DownloadRunner:
                             cancel=self.cancel,
                             max_connections=max_connections,
                             limiter=limiter,
+                            flood=flood,
                         ),
                         item.rel_path,
                         progress,
+                        flood,
                     )
                 else:
                     got = 0
@@ -362,6 +371,7 @@ class DownloadRunner:
                             cancel=self.cancel,
                             max_connections=max_connections,
                             limiter=limiter,
+                            flood=flood,
                         )
                     ) as stream:
                         async for chunk in stream:
@@ -376,18 +386,18 @@ class DownloadRunner:
 
             await sink.commit()
 
-    async def _documents(self, client, entity, item: IndexedFile) -> list:
+    async def _documents(self, client, entity, item: IndexedFile, flood) -> list:
         """The document of every part, in order, in as few round trips as possible."""
         ids = [part.message_id for part in item.parts]
         messages: list = []
         for start in range(0, len(ids), MESSAGE_BATCH):
             chunk = ids[start : start + MESSAGE_BATCH]
-            try:
-                got = await client.get_messages(entity, ids=chunk)
-            except FloodWaitError as exc:
-                log.warning("Flood wait of %ss while reading the messages", exc.seconds)
-                await asyncio.sleep(exc.seconds + 1)
-                got = await client.get_messages(entity, ids=chunk)
+            while True:
+                try:
+                    got = await client.get_messages(entity, ids=chunk)
+                    break
+                except FloodWaitError as exc:
+                    await flood.flooded(exc.seconds)
             messages.extend(got if isinstance(got, list) else [got])
 
         documents = []
@@ -400,15 +410,18 @@ class DownloadRunner:
             documents.append(message.document)
         return documents
 
-    async def _with_retry(self, call, rel_path: str, progress) -> int:
+    async def _with_retry(self, call, rel_path: str, progress, flood) -> int:
         attempt = 0
         while True:
             attempt += 1
             try:
                 return await call()
             except FloodWaitError as exc:
-                log.warning("Flood wait of %ss while downloading %s", exc.seconds, rel_path)
-                await asyncio.sleep(exc.seconds + 1)
+                # The senders answer a flood wait by themselves and never let one end a
+                # part, so this is left for a limit met outside them. The attempt is not
+                # counted: waiting is not failing.
+                attempt -= 1
+                await flood.flooded(exc.seconds)
             except asyncio.CancelledError:
                 raise JobCancelled() from None
             except Exception:

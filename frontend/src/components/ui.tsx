@@ -54,10 +54,19 @@ export function Pill({
   );
 }
 
-export function ProgressBar({ done, total }: { done: number; total: number }) {
+export function ProgressBar({
+  done,
+  total,
+  tone,
+}: {
+  done: number;
+  total: number;
+  /** "danger" paints the bar red, for a transfer that is held rather than moving. */
+  tone?: "danger";
+}) {
   const value = percent(done, total);
   return (
-    <div className="bar">
+    <div className={tone === "danger" ? "bar danger" : "bar"}>
       <div className="bar-fill" style={{ width: `${value}%` }} />
       {value > 0 && value < 100 ? (
         <div className="bar-cap" style={{ left: `${value}%` }} />

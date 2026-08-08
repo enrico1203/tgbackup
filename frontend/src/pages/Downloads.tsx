@@ -21,6 +21,7 @@ import ScheduleGrid, { ALWAYS, describeSchedule } from "../components/ScheduleGr
 
 const MEGA = 1_000_000;
 import DownloadActivity, { downloadPhaseLabel } from "../components/DownloadActivity";
+import { isHeld } from "../components/FloodNotice";
 import RemoteBrowser from "../components/RemoteBrowser";
 import type { Account, Channel, DownloadJob, RcloneStatus } from "../lib/types";
 import {
@@ -373,7 +374,11 @@ function DownloadCard({
     <Card>
       <CardHead title={job.name}>
         <div className="row" style={{ gap: 8 }}>
-          {running ? (
+          {running && isHeld(progress) ? (
+            <Pill tone="bad" live>
+              Flood wait
+            </Pill>
+          ) : running ? (
             <Pill
               tone={(progress?.phase ?? job.phase) === "waiting" ? "mute" : "ok"}
               live={(progress?.phase ?? job.phase) !== "waiting"}
