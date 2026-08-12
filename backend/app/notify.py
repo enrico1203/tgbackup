@@ -18,7 +18,7 @@ from sqlalchemy import select
 from telethon.tl.types import InputPeerSelf
 
 from .db import SessionLocal
-from .models import Setting, utcnow
+from .models import Setting, TelegramAccount, utcnow
 from .telegram.manager import manager
 
 log = logging.getLogger(__name__)
@@ -104,7 +104,27 @@ def format_duration(start: datetime | None, end: datetime | None) -> str:
     return f"{seconds // 86400}d {(seconds % 86400) // 3600}h"
 
 
-async def send_alert(account_id: int, title: str, lines: list[str]) -> None:
+async def _fallback_account() -> int | None:
+    """An account to speak through, for a job that has none of its own.
+
+    A bot has no Saved Messages: it cannot start a conversation with anybody, and the
+    channel it uploads into is a backup and not a mailbox. So a job running on a bot set
+    borrows an account, the one chosen in the preferences if there is one and otherwise
+    any connected account, because a report that goes out through the wrong name is worth
+    incomparably more than one that is never sent. With no account at all on the
+    installation there is nothing to be done but say so in the log.
+    """
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(TelegramAccount.id).order_by(TelegramAccount.id)
+        )
+        for account_id in result.scalars():
+            if manager.is_connected(account_id):
+                return account_id
+    return None
+
+
+async def send_alert(account_id: int | None, title: str, lines: list[str]) -> None:
     """A report about something that did not happen.
 
     It goes out as a failure, so the `errors` mode delivers it: the whole point of the
@@ -116,7 +136,7 @@ async def send_alert(account_id: int, title: str, lines: list[str]) -> None:
 
 
 async def send_report(
-    account_id: int, title: str, outcome: str, lines: list[str], failed: bool
+    account_id: int | None, title: str, outcome: str, lines: list[str], failed: bool
 ) -> None:
     """Sends a report, unless the preferences say otherwise.
 
@@ -130,7 +150,14 @@ async def send_report(
         if events == "off" or (events == "errors" and not failed):
             return
 
-        target_account = configured_account or account_id
+        target_account = configured_account or account_id or await _fallback_account()
+        if not target_account:
+            log.warning(
+                "No Telegram account to send the notification for %s through: a job on a "
+                "bot set reports through an account, pick one in the settings",
+                title,
+            )
+            return
         client = await manager.get_client(target_account)
         body = "\n".join([f"tgbackup: {title}", f"Outcome: {outcome}", *lines])
         # To itself: the Saved Messages chat exists for every account and needs no setup.

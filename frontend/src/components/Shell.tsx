@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router";
 import {
   Archive,
+  Bot,
   CloudDownload,
   CloudUpload,
   FolderTree,
@@ -29,6 +30,7 @@ const NAV = [
   { to: "/jobs", label: "Sync jobs", icon: CloudUpload, end: false },
   { to: "/downloads", label: "Download jobs", icon: CloudDownload, end: false },
   { to: "/accounts", label: "Telegram accounts", icon: Users, end: false },
+  { to: "/bots", label: "Telegram bots", icon: Bot, end: false },
   { to: "/explorer", label: "File explorer", icon: FolderTree, end: false },
   { to: "/files", label: "Files and restore", icon: Archive, end: false },
   { to: "/runs", label: "History", icon: History, end: false },
@@ -42,6 +44,7 @@ const TITLES: Record<string, string> = {
   "/jobs": "Sync jobs",
   "/downloads": "Download jobs",
   "/accounts": "Telegram accounts",
+  "/bots": "Telegram bot sets",
   "/explorer": "File explorer",
   "/files": "Files and restore",
   "/runs": "Run history",

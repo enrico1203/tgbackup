@@ -71,16 +71,17 @@ backend/
     transfer.py (export and import of a channel index)
     maintenance.py (check of a channel, rebuild of the index from it)
     notify.py (report at the end of a run, to Saved Messages)
-    api/       auth accounts jobs downloads files explorer dashboard export maintenance
-               preferences rclone version ws
-    telegram/  manager.py (client registry, peers) fast_transfer.py (parallel upload/download)
+    api/       auth accounts botsets jobs downloads files explorer dashboard export
+               maintenance preferences rclone version ws
+    telegram/  manager.py (client registry, peers) bots.py (bot clients, the lease pool)
+               fast_transfer.py (parallel upload/download)
                patches.py (the changes made to Telethon from the outside)
     rclone/    client.py (streaming lsjson, ranged cat, rcat, touch, config on disk)
     sync/      source.py destination.py scanner.py filters.py runner.py download.py
                scheduler.py window.py restore.py progress.py
 frontend/src/
-  pages/     Login ChangePassword Dashboard Jobs Downloads Accounts Explorer Files Runs
-             Export Maintenance Settings
+  pages/     Login ChangePassword Dashboard Jobs Downloads Accounts TelegramBots Explorer
+             Files Runs Export Maintenance Settings
   components/ Shell ui JobActivity DownloadActivity RemoteBrowser ChannelPicker
               ScheduleGrid UpdateBanner
   lib/       api auth progress types format theme channels
@@ -130,6 +131,49 @@ same bandwidth across more jobs. Everything that transfers goes through the one 
 download jobs, restores and browser downloads, so there is a single place where the number is decided
 and `FloodGate.allowance` lowers it from there while a run is being cut. `manager.transfer_lock` is
 shared between uploads and downloads: the budget does not care which direction the bytes go.
+
+**Bot sets** (`telegram/bots.py`, `bot_sets` and `bots`, revision `0012`): N bots that are admins of
+one channel, used by a sync job as one uploader. A bot is a Telegram account of its own, so five bots
+are five auth keys, five budgets of twenty connections and five separate flood limits, which is the
+whole point: a job on a set uploads **one file per bot at the same time**, and one bot being held
+back leaves the other four moving. What a bot cannot do shapes everything around it. It has no dialog
+list, so a channel is named and resolved with `channels.getChannels` passing `access_hash=0`, which
+the server accepts from a bot for a channel it belongs to and which is therefore both the peer and
+the proof of membership; the access hash stored on the row belongs to whichever account discovered
+the channel and is worth nothing here. It has no Saved Messages, so the report of a run travels
+through an account (`notify._fallback_account`). It is never Premium, so the split is 1.9 GB. And it
+only uploads: the explorer, the restore, the browser download, the download jobs and the channel
+check all read messages back and still ask for an account that is a member, which
+`restore.reader_account` and `maintenance._reader_account` say in one sentence instead of failing
+somewhere inside a stream.
+
+**One channel is one row, whoever carries the job** (`channels.account_id` nullable): a bot-set job
+points at the same `channels` row an account job would, so switching a job between the two changes
+one column and leaves `channel_id` alone, which is what keeps the index from splitting in two and the
+explorer, the export and the check from seeing two channels with one title. The row is nullable on
+`account_id` only so an installation that has never linked an account can create one by naming the
+channel through a bot; `channel_for_account` and the import adopt such a row rather than duplicating
+it. Deleting an account is refused while any job writes to a channel it discovered, because those
+rows cascade with it.
+
+**The upload phase is a worker pool** (`runner.AccountTransport`, `BotSetTransport`, `_upload_worker`):
+the transport is decided once at the start of the run and everything below asks it rather than the
+account. An account gives one worker, which is the behaviour that was always there; a set gives
+`parallel_files` of them, 0 meaning as many as it has bots. A bot is **leased for one file and handed
+back**, never held for the run: that is what stops two jobs sharing a set from deadlocking, since a
+worker waits before it holds anything and never holds one bot while asking for another. The claim of
+the next `pending` row is under one `asyncio.Lock`, one process and one loop being all it takes, and
+without it two workers would upload the same file into two sets of messages of which only the last
+would be recorded. A bot that fails to connect or is no longer in the channel is retired from the run
+rather than failing the file it was handed, and a run left with no usable bot raises `NoCarrier`,
+which puts the file back to `pending` instead of marking every remaining one in error.
+
+**One flood gate per bot, read as one** (`flood.FloodGroup`): the gate exists because twenty
+connections meeting one limit is the storm, and that argument stops at the account boundary. Each bot
+of a set gets its own gate, so a wait told to one does not hold the others, and the connection budget
+it lowers under a limit belongs to that bot alone. The group answers `snapshot` and `events` exactly
+as a gate does: held for the longest wait still running, limited if any of them is, events summed,
+which is what the progress frame carries and what `limited_events` on the run row records.
 
 **Sources**: `sync/source.py` hides local folders and rclone remotes behind the same interface
 (`list_files`, `reader`). The uploader does not know where the bytes come from.

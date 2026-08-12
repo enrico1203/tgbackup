@@ -8,6 +8,7 @@ every modified or renamed file is deleted and uploaded again.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import math
 import os
@@ -22,6 +23,8 @@ from ..db import SessionLocal
 from ..models import (
     GUARD_MIN_ENTRIES,
     MTIME_UNKNOWN,
+    Bot,
+    BotSet,
     Channel,
     FileEntry,
     FilePart,
@@ -30,12 +33,13 @@ from ..models import (
     TelegramAccount,
     utcnow,
 )
+from ..telegram.bots import bot_set_budget, bots
 from ..telegram.fast_transfer import call_with_timeout, upload_slice
-from ..telegram.flood import FloodGate
+from ..telegram.flood import FloodGate, FloodGroup
 from ..telegram.manager import account_budget, manager
 from ..telegram.throttle import limiter_for
 from . import window
-from .progress import hub
+from .progress import WorkerProgress, hub
 from .source import build_source
 
 log = logging.getLogger(__name__)
@@ -146,10 +150,187 @@ class StopSignal:
         await self._event.wait()
 
 
+class NoCarrier(Exception):
+    """Nothing is left that can carry a file: every bot of the set has failed.
+
+    Told apart from an ordinary upload failure on purpose. A file that fails is one file
+    marked `error` and the run carries on; a transport that fails would mark every
+    remaining file in turn, in the time it takes to try, and leave a job full of errors
+    whose real cause was one dead token.
+    """
+
+
+class AccountTransport:
+    """The way a job has always talked to Telegram: one account, one file at a time.
+
+    The connection budget is the account's, divided among the jobs allowed to upload on it
+    together, and there is one flood gate because there is one account to be limited.
+    """
+
+    kind = "account"
+
+    def __init__(
+        self, job_id: int, account: TelegramAccount | None, account_id: int, peer, cancel
+    ) -> None:
+        self.account_id = account_id
+        self.label = account.label if account else str(account_id)
+        self._peer = peer
+        self.concurrency, self.max_connections = account_budget(account)
+        # One file at a time: an account has one budget of twenty connections, and
+        # splitting it across two files would only make both of them slower.
+        self.workers = 1
+        self.gate = FloodGate(f"job {job_id}", cancel=cancel)
+        self.lock = manager.transfer_lock(account_id, self.concurrency)
+        self.waiting_for = f"account {self.label}"
+
+    async def control(self):
+        """The client the deletions and the cleanup go through."""
+        return await manager.get_client(self.account_id), self._peer
+
+    @contextlib.asynccontextmanager
+    async def carrier(self, worker: WorkerProgress):
+        client = await manager.get_client(self.account_id)
+        worker.label = self.label
+        yield client, self._peer, self.gate, self.max_connections
+
+
+class BotSetTransport:
+    """N bots of one set, one file each.
+
+    A bot is leased for the length of one file and handed back, never held for the run.
+    That is what lets two jobs share a set without deadlocking, since a worker waits before
+    it holds anything, and it is why a job configured for five parallel files on a set
+    whose bots are busy simply uploads fewer at a time instead of failing.
+
+    Each bot keeps its own flood gate, because each bot is its own account: one told to
+    wait must not stop the other four, and the connection budget the gate lowers under a
+    limit belongs to that bot alone. What the run reports is the group of them.
+    """
+
+    kind = "botset"
+
+    def __init__(
+        self,
+        job_id: int,
+        bot_set: BotSet,
+        members: list[tuple[int, str]],
+        tg_id: int,
+        parallel_files: int,
+        cancel,
+    ) -> None:
+        self.set_id = bot_set.id
+        self.label = bot_set.name
+        self.tg_id = tg_id
+        self._labels = dict(members)
+        self.valid = {bot_id for bot_id, _ in members}
+        self.concurrency, self.max_connections = bot_set_budget(bot_set)
+        # Zero means "as many as there are bots", which is what somebody who built a set of
+        # five wants from it. More workers than bots would only queue on the pool.
+        wanted = parallel_files if parallel_files > 0 else len(members)
+        self.workers = max(1, min(wanted, len(members)))
+        self._gates = {
+            bot_id: FloodGate(f"job {job_id} on {label}", cancel=cancel)
+            for bot_id, label in members
+        }
+        self.gate = FloodGroup(list(self._gates.values()))
+        self.lock = bots.transfer_lock(self.set_id, self.concurrency)
+        self.waiting_for = f"bot set {self.label}"
+        bots.pool(self.set_id, [bot_id for bot_id, _ in members])
+
+    async def control(self):
+        """The first bot that answers, for the deletions and the cleanup.
+
+        Deleting is not parallel work and one client is enough. It has to be a bot that is
+        an admin able to delete, which is checked when the job is saved and said in the
+        form, because a bot without that right uploads perfectly and then leaves every
+        removed file in the channel for ever.
+        """
+        last: Exception | None = None
+        for bot_id in list(self.valid):
+            try:
+                client = await bots.get_client(bot_id)
+                return client, await bots.peer(bot_id, self.tg_id)
+            except Exception as exc:
+                last = exc
+                log.warning("Bot %s is unusable: %s", self._labels.get(bot_id, bot_id), exc)
+                self._retire(bot_id)
+        raise NoCarrier(
+            f"No bot of the set {self.label} could be used: {last}"
+            if last
+            else f"The set {self.label} has no usable bot"
+        )
+
+    def _retire(self, bot_id: int) -> None:
+        self.valid.discard(bot_id)
+        bots.drop_from_pool(self.set_id, bot_id)
+
+    @contextlib.asynccontextmanager
+    async def carrier(self, worker: WorkerProgress):
+        while True:
+            if not self.valid:
+                raise NoCarrier(f"Every bot of the set {self.label} failed")
+            bot_id = await bots.lease(self.set_id, self.valid)
+            if bot_id is None:
+                raise NoCarrier(f"Every bot of the set {self.label} failed")
+            try:
+                client = await bots.get_client(bot_id)
+                peer = await bots.peer(bot_id, self.tg_id)
+            except Exception as exc:
+                # The bot is out for the rest of the run rather than for this file: a
+                # token that was revoked or a bot removed from the channel will fail in
+                # exactly the same way on every file that follows.
+                log.warning(
+                    "Bot %s dropped from this run: %s", self._labels.get(bot_id, bot_id), exc
+                )
+                self._retire(bot_id)
+                continue
+
+            worker.label = self._labels.get(bot_id, str(bot_id))
+            try:
+                yield client, peer, self._gates[bot_id], self.max_connections
+            finally:
+                bots.release(self.set_id, bot_id)
+            return
+
+
+async def build_transport(session, job: SyncJob, channel: Channel, cancel):
+    """Whoever is going to carry this job: its account, or the bots of its set."""
+    if job.bot_set_id is not None:
+        bot_set = await session.get(BotSet, job.bot_set_id)
+        if bot_set is None:
+            raise RuntimeError("The bot set of the job no longer exists")
+        result = await session.execute(
+            select(Bot).where(Bot.bot_set_id == bot_set.id, Bot.enabled.is_(True))
+        )
+        members = [
+            (bot.id, bot.username or bot.first_name or f"bot {bot.id}")
+            for bot in result.scalars()
+        ]
+        if not members:
+            raise RuntimeError(
+                f"The bot set {bot_set.name} has no enabled bot: add one, or move the "
+                "job onto an account"
+            )
+        return BotSetTransport(
+            job.id, bot_set, members, channel.tg_id, job.parallel_files, cancel
+        )
+
+    if job.account_id is None:
+        raise RuntimeError("The job has neither a Telegram account nor a bot set")
+    account = await session.get(TelegramAccount, job.account_id)
+    return AccountTransport(
+        job.id, account, job.account_id, manager.input_peer(channel), cancel
+    )
+
+
 class JobRunner:
     def __init__(self, job_id: int, cancel: StopSignal) -> None:
         self.job_id = job_id
         self.cancel = cancel
+        # One process and one event loop, so a lock is all it takes to stop two workers
+        # claiming the same file: the select and the commit that marks it `uploading` have
+        # to be one step.
+        self._claim = asyncio.Lock()
 
     def _check_cancel(self) -> None:
         if self.cancel.is_set():
@@ -175,9 +356,12 @@ class JobRunner:
             job_name = job.name
             part_size = job.part_size_bytes
             trash_days = job.trash_days
-            account_id = job.account_id
-            peer = manager.input_peer(channel)
             source = build_source(job)
+
+            # Who carries the bytes, decided once: one account and one file at a time, or
+            # the bots of a set and one file each. Everything below asks the transport
+            # rather than the account, which is what makes the two paths one run.
+            transport = await build_transport(session, job, channel, self.cancel)
 
             # The ceiling of this job under the one of the installation, following the
             # hours of the window: the provider is read as the bucket refills, so a run
@@ -187,22 +371,17 @@ class JobRunner:
                 window.rate_provider(job.throttle_bps, job.schedule_hours, zone)
             )
 
-            account = await session.get(TelegramAccount, job.account_id)
-            # The connection budget is per account, not per job: it has to be divided
-            # among the jobs allowed to upload together, or Telegram blocks them.
-            concurrency, max_connections = account_budget(account)
-
         progress = hub.start_job(self.job_id, job_name)
         progress.phase = "scan"
-        # One gate for the whole run, so the backoff climbs across files instead of
-        # starting again at thirty seconds on every one of them, and the interface can
-        # say that a job at zero bytes is being held rather than being slow.
-        flood = FloodGate(f"job {self.job_id}", cancel=self.cancel)
+        # The gate of the whole run, so the backoff climbs across files instead of starting
+        # again at thirty seconds on every one of them, and the interface can say that a
+        # job at zero bytes is being held rather than being slow. On a bot set it is the
+        # group of the gates, one per bot, read as one.
+        flood = transport.gate
         progress.flood = flood
 
         try:
-            client = await manager.get_client(account_id)
-            entity = peer
+            client, entity = await transport.control()
 
             counters = await self._diff(source, run_id, progress)
             self._check_cancel()
@@ -220,22 +399,23 @@ class JobRunner:
 
             # Two jobs on the same account would each open 20 connections and exceed the
             # per data center ceiling, blocking each other: the upload phase is serialized
-            # per account. Only this phase, though: scanning and cleanup can go on in
-            # parallel, and waiting has a phase of its own so a queued job does not look
-            # stuck.
-            lock = manager.transfer_lock(account_id, concurrency)
+            # per account, and per bot set for the same reason, its bots being shared.
+            # Only this phase, though: scanning and cleanup can go on in parallel, and
+            # waiting has a phase of its own so a queued job does not look stuck.
+            lock = transport.lock
             if lock.locked():
                 progress.phase = "waiting"
                 await self._set_phase("waiting")
-                log.info("Job %d waiting for account %d to upload", self.job_id, account_id)
+                log.info(
+                    "Job %d waiting for %s to upload", self.job_id, transport.waiting_for
+                )
 
             async with lock:
                 self._check_cancel()
                 progress.phase = "upload"
                 await self._set_phase("upload")
                 uploaded_files, uploaded_bytes = await self._upload_pending(
-                    client, entity, part_size, progress, source, max_connections, limiter,
-                    flood,
+                    transport, part_size, progress, source, limiter
                 )
 
             async with SessionLocal() as session:
@@ -527,9 +707,14 @@ class JobRunner:
     # Upload
 
     async def _upload_pending(
-        self, client, entity, part_size: int, progress, source, max_connections: int,
-        limiter, flood,
+        self, transport, part_size: int, progress, source, limiter
     ) -> tuple[int, int]:
+        """Uploads everything pending, one file per worker at a time.
+
+        An account job has one worker and behaves exactly as it always has. A bot set job
+        has as many as its bots, each carrying a different file on a different account, so
+        what changes is not how a file is uploaded but how many are in flight.
+        """
         async with SessionLocal() as session:
             totals = await session.execute(
                 select(func.count(FileEntry.id), func.coalesce(func.sum(FileEntry.size), 0)).where(
@@ -543,11 +728,49 @@ class JobRunner:
         progress.files_done = 0
         progress.bytes_done = 0
 
-        uploaded_files = 0
-        uploaded_bytes = 0
+        workers = [
+            WorkerProgress(slot=index, label=transport.label)
+            for index in range(transport.workers)
+        ]
+        progress.workers = workers
+        if transport.workers > 1:
+            log.info(
+                "Job %d uploads %d files at a time on %s",
+                self.job_id, transport.workers, transport.waiting_for,
+            )
 
-        while True:
-            self._check_cancel()
+        tasks = [
+            asyncio.create_task(
+                self._upload_worker(transport, worker, part_size, progress, source, limiter),
+                name=f"job-{self.job_id}-upload-{worker.slot}",
+            )
+            for worker in workers
+        ]
+        try:
+            results = await asyncio.gather(*tasks)
+        except BaseException:
+            # One worker failed or the run was stopped: the others are carrying a file
+            # each and would go on uploading after the run has been written off. They are
+            # cancelled and awaited, which puts their entries back through the same path a
+            # stop takes, and nothing is lost since every part sent is already recorded.
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+        finally:
+            progress.workers = []
+
+        return sum(item[0] for item in results), sum(item[1] for item in results)
+
+    async def _claim_next(self) -> tuple[int, str, str, int] | None:
+        """Takes the next pending file, marking it `uploading` so no other worker can.
+
+        The lock is what makes the read and the write one step. Two workers selecting the
+        same row and both committing it would upload the same file twice, into two sets of
+        messages, of which only the last would be recorded and the first would stay in the
+        channel with nothing pointing at it.
+        """
+        async with self._claim:
             async with SessionLocal() as session:
                 result = await session.execute(
                     select(FileEntry)
@@ -557,43 +780,77 @@ class JobRunner:
                 )
                 entry = result.scalar_one_or_none()
                 if entry is None:
-                    return uploaded_files, uploaded_bytes
+                    return None
                 entry.state = "uploading"
                 await session.commit()
-                file_id = entry.id
-                rel_path = entry.rel_path
-                name = entry.name
-                size = entry.size
+                return entry.id, entry.rel_path, entry.name, entry.size
 
+    async def _release(self, file_id: int) -> None:
+        """Puts a claimed file back, when the transport could not take it after all."""
+        async with SessionLocal() as session:
+            entry = await session.get(FileEntry, file_id)
+            if entry is not None and entry.state == "uploading":
+                entry.state = "pending"
+                await session.commit()
+
+    async def _upload_worker(
+        self, transport, worker: WorkerProgress, part_size: int, progress, source, limiter
+    ) -> tuple[int, int]:
+        uploaded_files = 0
+        uploaded_bytes = 0
+
+        while True:
+            self._check_cancel()
+            claimed = await self._claim_next()
+            if claimed is None:
+                worker.current_file = None
+                return uploaded_files, uploaded_bytes
+            file_id, rel_path, name, size = claimed
+
+            worker.current_file = rel_path
             progress.current_file = rel_path
 
             try:
-                sent = await self._upload_one(
-                    client, entity, source, rel_path, name, size, part_size,
-                    progress, file_id, max_connections, limiter, flood
-                )
-            except JobCancelled:
-                async with SessionLocal() as session:
-                    entry = await session.get(FileEntry, file_id)
-                    if entry is not None and entry.state == "uploading":
-                        # If any part had already gone out it must be deleted next round,
-                        # otherwise it would stay orphaned in the channel.
-                        has_parts = await session.scalar(
-                            select(func.count(FilePart.id)).where(FilePart.file_id == file_id)
+                async with transport.carrier(worker) as (
+                    client, entity, flood, max_connections,
+                ):
+                    try:
+                        sent = await self._upload_one(
+                            client, entity, source, rel_path, name, size, part_size,
+                            progress, worker, file_id, max_connections, limiter, flood,
                         )
-                        entry.state = "stale" if has_parts else "pending"
-                        await session.commit()
+                    except JobCancelled:
+                        async with SessionLocal() as session:
+                            entry = await session.get(FileEntry, file_id)
+                            if entry is not None and entry.state == "uploading":
+                                # If any part had already gone out it must be deleted next
+                                # round, otherwise it would stay orphaned in the channel.
+                                has_parts = await session.scalar(
+                                    select(func.count(FilePart.id)).where(
+                                        FilePart.file_id == file_id
+                                    )
+                                )
+                                entry.state = "stale" if has_parts else "pending"
+                                await session.commit()
+                        raise
+                    except Exception as exc:
+                        log.exception("Upload of %s failed", rel_path)
+                        async with SessionLocal() as session:
+                            entry = await session.get(FileEntry, file_id)
+                            if entry is not None:
+                                entry.state = "error"
+                                entry.error = str(exc)[:1000]
+                                await session.commit()
+                        progress.files_done += 1
+                        worker.current_file = None
+                        continue
+            except NoCarrier:
+                # Not this file's fault and not a reason to mark it: it goes back to
+                # pending and the run fails as a whole, which is the honest answer when
+                # there is nothing left to upload with.
+                await self._release(file_id)
+                worker.current_file = None
                 raise
-            except Exception as exc:
-                log.exception("Upload of %s failed", rel_path)
-                async with SessionLocal() as session:
-                    entry = await session.get(FileEntry, file_id)
-                    if entry is not None:
-                        entry.state = "error"
-                        entry.error = str(exc)[:1000]
-                        await session.commit()
-                progress.files_done += 1
-                continue
 
             async with SessionLocal() as session:
                 entry = await session.get(FileEntry, file_id)
@@ -607,6 +864,7 @@ class JobRunner:
             uploaded_files += 1
             uploaded_bytes += size
             progress.files_done += 1
+            worker.current_file = None
 
     async def _upload_one(
         self,
@@ -618,6 +876,7 @@ class JobRunner:
         size: int,
         part_size: int,
         progress,
+        worker: WorkerProgress,
         file_id: int,
         max_connections: int,
         limiter,
@@ -631,10 +890,12 @@ class JobRunner:
         """
         slices = part_plan(size, part_size)
         progress.current_parts = len(slices)
+        worker.current_parts = len(slices)
 
         for index, (offset, length) in enumerate(slices):
             self._check_cancel()
             progress.current_part = index + 1
+            worker.current_part = index + 1
             file_name = part_file_name(name, index, len(slices))
 
             handle = await self._upload_with_retry(
@@ -827,12 +1088,21 @@ async def _report(job_id: int, status: str, error: str | None) -> None:
             )
         )
         source = job.remote if job.source_type == "rclone" else job.local_path
+        account_id = job.account_id
+        carrier = ""
+        if job.bot_set_id is not None:
+            bot_set = await session.get(BotSet, job.bot_set_id)
+            carrier = bot_set.name if bot_set else f"bot set {job.bot_set_id}"
 
     outcome = {"idle": "completed", "error": "failed"}.get(status, status)
     lines = [
         f"Source: {source}",
         f"Channel: {channel.title if channel else 'unknown'}",
     ]
+    if carrier:
+        # Worth naming: a job on a bot set is reported through somebody else's account,
+        # so without this the message would arrive with nothing saying who uploaded it.
+        lines.append(f"Uploaded by the bot set {carrier}")
     if run is not None:
         lines.append(
             f"Examined {run.scanned}, new {run.added}, modified {run.modified}, "
@@ -863,7 +1133,7 @@ async def _report(job_id: int, status: str, error: str | None) -> None:
         lines.append(f"Error: {error}")
 
     await notify.send_report(
-        account_id=job.account_id,
+        account_id=account_id,
         title=f"sync job {job.name}",
         outcome=outcome,
         lines=lines,

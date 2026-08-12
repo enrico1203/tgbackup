@@ -56,6 +56,31 @@ class SpeedMeter:
 
 
 @dataclass
+class WorkerProgress:
+    """One file being uploaded right now, and which bot is carrying it.
+
+    A job on an account has one of these and does not need it: `current_file` says
+    everything there is to say. A job on a bot set has one per bot, and without them the
+    interface could only show a bar moving with no idea what is inside it.
+    """
+
+    slot: int
+    label: str
+    current_file: str | None = None
+    current_part: int = 0
+    current_parts: int = 0
+
+    def snapshot(self) -> dict:
+        return {
+            "slot": self.slot,
+            "label": self.label,
+            "current_file": self.current_file,
+            "current_part": self.current_part,
+            "current_parts": self.current_parts,
+        }
+
+
+@dataclass
 class JobProgress(SpeedMeter):
     job_id: int
     name: str
@@ -63,6 +88,10 @@ class JobProgress(SpeedMeter):
     current_file: str | None = None
     current_part: int = 0
     current_parts: int = 0
+
+    # Empty on a job uploading one file at a time, which is every job on an account. On a
+    # bot set it holds one entry per file in flight.
+    workers: list[WorkerProgress] = field(default_factory=list)
 
     files_total: int = 0
     files_done: int = 0
@@ -101,14 +130,28 @@ class JobProgress(SpeedMeter):
         return self.bytes_remaining / self.speed_bps
 
     def snapshot(self) -> dict:
+        # With several files in flight there is no single current one, and the fields that
+        # name it are filled from the first worker still carrying something: an interface
+        # that only knows how to show one file keeps showing a true one.
+        active = next(
+            (worker for worker in self.workers if worker.current_file is not None), None
+        )
+        current = self.current_file if not self.workers else (
+            active.current_file if active else None
+        )
+        part = self.current_part if not self.workers else (active.current_part if active else 0)
+        parts = self.current_parts if not self.workers else (
+            active.current_parts if active else 0
+        )
         return {
             **snapshot_of(self.flood),
             "job_id": self.job_id,
             "name": self.name,
             "phase": self.phase,
-            "current_file": self.current_file,
-            "current_part": self.current_part,
-            "current_parts": self.current_parts,
+            "current_file": current,
+            "current_part": part,
+            "current_parts": parts,
+            "workers": [worker.snapshot() for worker in self.workers],
             "scanned_files": self.scanned_files,
             "scanned_dirs": self.scanned_dirs,
             "scanned_bytes": self.scanned_bytes,

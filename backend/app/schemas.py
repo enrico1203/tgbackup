@@ -95,12 +95,98 @@ class AccountStepOut(BaseModel):
     account: AccountOut | None = None
 
 
+# Bot sets
+
+
+class BotSetIn(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    # Where the application credentials come from. Signing a bot in over MTProto needs an
+    # api_id and an api_hash beside the token, and any pair works for any bot, so they are
+    # ordinarily copied from an account already linked and the user pastes only tokens.
+    # The explicit pair is for an installation that has no account at all.
+    from_account_id: int | None = None
+    api_id: int | None = None
+    api_hash: str | None = None
+    max_connections: int = Field(default=8, ge=1, le=20)
+    max_concurrent_jobs: int = Field(default=1, ge=1, le=10)
+
+
+class BotSetUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    max_connections: int | None = Field(default=None, ge=1, le=20)
+    max_concurrent_jobs: int | None = Field(default=None, ge=1, le=10)
+    default_part_size: int | None = Field(default=None, gt=0)
+    from_account_id: int | None = None
+    api_id: int | None = None
+    api_hash: str | None = None
+
+
+class BotIn(BaseModel):
+    # The token BotFather gives, "123456:AA...". It is stored encrypted and never returned.
+    token: str = Field(min_length=20)
+
+
+class BotUpdate(BaseModel):
+    enabled: bool | None = None
+
+
+class BotOut(Model):
+    id: int
+    bot_set_id: int
+    tg_id: int | None
+    username: str | None
+    first_name: str | None
+    enabled: bool
+    status: str
+    last_error: str | None
+    created_at: datetime
+    connected: bool = False
+
+
+class BotSetOut(Model):
+    id: int
+    name: str
+    api_id: int
+    max_connections: int
+    max_concurrent_jobs: int
+    default_part_size: int
+    created_at: datetime
+    bots: list[BotOut] = []
+    # Bots that are enabled and connected right now: what decides how many files a job on
+    # this set can carry at once.
+    bots_ready: int = 0
+    jobs_count: int = 0
+
+
+class BotSetChannelIn(BaseModel):
+    # A channel id in either form, -1001234567890 or 1234567890, or a public username.
+    identifier: str = Field(min_length=1, max_length=128)
+
+
+class BotChannelStatus(BaseModel):
+    bot_id: int
+    label: str
+    # Whether the bot is in the channel at all, which is what the peer resolution proves.
+    member: bool
+    admin: bool
+    # Uploading is half a sync job: without this the files that disappear from the source
+    # stay in the channel for ever.
+    can_delete: bool
+    error: str | None = None
+
+
+class BotSetChannelCheckOut(BaseModel):
+    channel_id: int
+    channel_title: str
+    bots: list[BotChannelStatus]
+
+
 # Channels
 
 
 class ChannelOut(Model):
     id: int
-    account_id: int
+    account_id: int | None
     tg_id: int
     title: str
     username: str | None
@@ -128,7 +214,13 @@ class CheckScheduleIn(BaseModel):
 
 class JobIn(BaseModel):
     name: str = Field(min_length=1, max_length=128)
-    account_id: int
+    # Exactly one of the two: an account uploads one file at a time, a bot set uploads one
+    # per bot.
+    account_id: int | None = None
+    bot_set_id: int | None = None
+    # How many files at once on a bot set, 0 for as many as it has bots. Ignored on an
+    # account, whose twenty connections belong to one file at a time.
+    parallel_files: int = Field(default=0, ge=0, le=20)
     channel_id: int
     source_type: Literal["local", "rclone"] = "local"
     local_path: str = ""
@@ -154,6 +246,10 @@ class JobUpdate(BaseModel):
     # Moving the job to another Telegram account. Without a channel_id beside it the
     # channel travels with the job, onto the row the new account holds for it.
     account_id: int | None = None
+    # Moving it onto a bot set, or back off one: the two are exclusive and the channel row
+    # does not move, since a bot resolves its own peer and ignores the stored access hash.
+    bot_set_id: int | None = None
+    parallel_files: int | None = Field(default=None, ge=0, le=20)
     channel_id: int | None = None
     source_type: Literal["local", "rclone"] | None = None
     local_path: str | None = None
@@ -188,7 +284,9 @@ class JobStats(BaseModel):
 class JobOut(Model):
     id: int
     name: str
-    account_id: int
+    account_id: int | None
+    bot_set_id: int | None
+    parallel_files: int
     channel_id: int
     source_type: str
     local_path: str
@@ -217,7 +315,12 @@ class JobOut(Model):
     next_run_at: datetime | None
     created_at: datetime
 
+    # The name of whatever carries the job, account or bot set. One field and not two
+    # because everything that shows a job shows one carrier, and the pages that group by
+    # channel read this and nothing else.
     account_label: str = ""
+    # account or botset, for the pages that have something different to say about each.
+    transport: str = "account"
     channel_title: str = ""
     # Used by the frontend to build the t.me/c/<channel>/<message> links.
     channel_tg_id: int = 0

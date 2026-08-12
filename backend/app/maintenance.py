@@ -164,6 +164,22 @@ async def _channel(session, channel_id: int) -> Channel:
     return channel
 
 
+def _reader_account(channel: Channel) -> int:
+    """The account a check or a rebuild reads the channel through.
+
+    Both of these read messages, and reading is the one thing a bot set does not do here:
+    a channel that only ever had bots in it has no account to ask, and saying so is better
+    than a task that starts and fails halfway with a confusing error.
+    """
+    if channel.account_id is None:
+        raise MaintenanceError(
+            "No Telegram account is attached to this channel. Checking and rebuilding "
+            "read the messages back, which a bot set cannot do: link an account that is "
+            "a member of the channel and refresh its channel list."
+        )
+    return channel.account_id
+
+
 async def running_job_on(session, channel_id: int) -> str | None:
     """The name of a sync job running on this channel, if there is one."""
     return await session.scalar(
@@ -196,7 +212,7 @@ async def check_channel(task: Task, channel_id: int, repair: bool) -> None:
     async with SessionLocal() as session:
         channel = await _channel(session, channel_id)
         peer = manager.input_peer(channel)
-        account_id = channel.account_id
+        account_id = _reader_account(channel)
 
         rows = await session.execute(
             select(FilePart.message_id, FilePart.size, FilePart.part_index, FileEntry.id)
@@ -395,7 +411,7 @@ async def rebuild_index(
     async with SessionLocal() as session:
         channel = await _channel(session, channel_id)
         peer = manager.input_peer(channel)
-        account_id = channel.account_id
+        account_id = _reader_account(channel)
 
     client = await manager.get_client(account_id)
     task.step = "reading the channel"

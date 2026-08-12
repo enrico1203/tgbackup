@@ -8,6 +8,7 @@ from sqlalchemy import select
 from .api import (
     accounts,
     auth,
+    botsets,
     dashboard,
     downloads,
     explorer,
@@ -28,6 +29,7 @@ from .security import hash_password
 from .sync.progress import hub
 from .sync.scheduler import scheduler
 from .telegram import patches
+from .telegram.bots import bots
 from .telegram.manager import manager
 
 logging.basicConfig(
@@ -70,6 +72,9 @@ async def lifespan(_: FastAPI):
 
     hub.start()
     await manager.restore_sessions()
+    # The bots come up with the accounts: a set of five that only signed in when a job
+    # started would make the first run of the night wait for five sign ins.
+    await bots.restore_sessions()
     await scheduler.start()
     log.info("tgbackup %s started", settings.app_version)
 
@@ -77,6 +82,7 @@ async def lifespan(_: FastAPI):
 
     await scheduler.shutdown()
     await manager.shutdown()
+    await bots.shutdown()
     await hub.stop()
     await engine.dispose()
 
@@ -85,6 +91,7 @@ app = FastAPI(title="tgbackup", version=settings.app_version, lifespan=lifespan)
 
 app.include_router(auth.router)
 app.include_router(accounts.router)
+app.include_router(botsets.router)
 app.include_router(jobs.router)
 app.include_router(downloads.router)
 app.include_router(files.router)

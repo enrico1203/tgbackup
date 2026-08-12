@@ -138,6 +138,23 @@ async def delete_account(account_id: int, session: SessionDep, _: ActiveUserDep)
             f"The account is used by {jobs} sync jobs, delete them before disconnecting it",
         )
 
+    # The channel rows of an account go with it, and a job on a bot set may be writing to
+    # one of them: it would lose its destination and its whole index without ever having
+    # named this account. So the row has to be freed first, by moving that job elsewhere.
+    borrowed = await session.scalar(
+        select(func.count(SyncJob.id)).where(
+            SyncJob.channel_id.in_(
+                select(Channel.id).where(Channel.account_id == account_id)
+            )
+        )
+    )
+    if borrowed:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"{borrowed} sync jobs write to channels discovered with this account: move "
+            "them onto another account before disconnecting it",
+        )
+
     await manager.logout(account_id)
     await session.delete(account)
     await session.commit()
@@ -225,8 +242,16 @@ async def channel_for_account(session, account_id: int, tg_id: int) -> Channel:
         )
 
     if channel is None:
+        # A row with no account behind it is one a bot set created by naming the channel,
+        # and it is adopted rather than duplicated: one Telegram channel is one row, so a
+        # job moved from a bot set onto an account keeps pointing at the same index.
+        channel = await session.scalar(
+            select(Channel).where(Channel.account_id.is_(None), Channel.tg_id == tg_id)
+        )
+    if channel is None:
         channel = Channel(account_id=account_id, tg_id=tg_id)
         session.add(channel)
+    channel.account_id = account_id
     channel.access_hash = live["access_hash"]
     channel.title = live["title"]
     channel.username = live["username"]

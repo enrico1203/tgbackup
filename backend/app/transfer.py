@@ -125,7 +125,14 @@ async def build_export(session: AsyncSession, channel_id: int) -> dict:
     channel = await session.get(Channel, channel_id)
     if channel is None:
         raise TransferError("Channel not found")
-    account = await session.get(TelegramAccount, channel.account_id)
+    # A channel this installation only knows through a bot set has no account behind it:
+    # the export carries the index all the same, and the import will attach it to whatever
+    # account the other machine picks.
+    account = (
+        await session.get(TelegramAccount, channel.account_id)
+        if channel.account_id is not None
+        else None
+    )
 
     jobs_result = await session.execute(
         select(SyncJob).where(SyncJob.channel_id == channel_id).order_by(SyncJob.id)
@@ -348,6 +355,16 @@ async def _resolve_channel(
         )
         await session.flush()
         return channel, created
+
+    if channel is None:
+        # An ownerless row, written when a bot set named this channel, is adopted rather
+        # than duplicated: one Telegram channel is one row here.
+        channel = await session.scalar(
+            select(Channel).where(Channel.account_id.is_(None), Channel.tg_id == tg_id)
+        )
+        if channel is not None:
+            channel.account_id = account.id
+            created = False
 
     if channel is None:
         channel = Channel(account_id=account.id, tg_id=tg_id)

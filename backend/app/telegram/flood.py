@@ -231,6 +231,56 @@ class FloodGate:
         }
 
 
+class FloodGroup:
+    """Several gates read as one, for a run that uploads through more than one account.
+
+    A bot set is N accounts, and a limit is something Telegram applies to one of them: a
+    single gate shared by five bots would stop four that were doing fine because the fifth
+    was told to wait. So every bot has its own, and this is what the run shows and records:
+    held for as long as the longest wait still running, limited if any of them is, and the
+    events summed, because "Telegram held this run back 7 times" is the same sentence
+    whichever of its accounts was being held.
+
+    It answers `snapshot` and `events` exactly as a gate does, which is all the progress
+    frame and the run row ever ask for.
+    """
+
+    def __init__(self, gates: list[FloodGate]) -> None:
+        self._gates = gates
+
+    @property
+    def events(self) -> int:
+        return sum(gate.events for gate in self._gates)
+
+    def limited(self) -> bool:
+        return any(gate.limited() for gate in self._gates)
+
+    def remaining(self) -> float:
+        return max((gate.remaining() for gate in self._gates), default=0.0)
+
+    def snapshot(self) -> dict:
+        if not self._gates:
+            return dict(EMPTY_SNAPSHOT)
+        parts = [gate.snapshot() for gate in self._gates]
+        waits = [part["flood_wait_seconds"] for part in parts if part["flood_wait_seconds"]]
+        totals = [part["flood_wait_total"] for part in parts if part["flood_wait_total"]]
+        allowed = [
+            part["connections_allowed"] for part in parts if part["connections_allowed"]
+        ]
+        ago = [part["limited_ago"] for part in parts if part["limited_ago"] is not None]
+        return {
+            "flood_wait_seconds": max(waits) if waits else None,
+            "flood_wait_total": max(totals) if totals else None,
+            "flood_waits": sum(part["flood_waits"] for part in parts),
+            "limited": any(part["limited"] for part in parts),
+            "limited_events": sum(part["limited_events"] for part in parts),
+            "limited_ago": min(ago) if ago else None,
+            # The width the bots are working at, added up: what the user set is per bot,
+            # and what is happening is the total.
+            "connections_allowed": sum(allowed) if allowed else None,
+        }
+
+
 EMPTY_SNAPSHOT = {
     "flood_wait_seconds": None,
     "flood_wait_total": None,

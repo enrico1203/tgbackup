@@ -101,6 +101,26 @@ async def _parts_of(session, file_id: int) -> list[tuple[int, int, int, int]]:
     ]
 
 
+async def reader_account(session, channel: Channel, job: SyncJob | None = None) -> int:
+    """The account that reads a channel back: for a restore, a browser download, a check.
+
+    A bot set uploads and nothing else. It has no dialog list, it cannot be written to,
+    and a job that runs on one still needs a user account behind the channel for
+    everything that reads: the account of the job when it has one, otherwise the account
+    the channel was discovered with. When there is neither, the honest answer is to say so
+    here rather than to fail somewhere inside a stream that has already sent its headers.
+    """
+    if job is not None and job.account_id is not None:
+        return job.account_id
+    if channel is not None and channel.account_id is not None:
+        return channel.account_id
+    raise ValueError(
+        "No Telegram account is attached to this channel. A bot set can only upload: "
+        "browsing, restoring and checking need an account that is a member of the "
+        "channel, so link one and refresh its channel list."
+    )
+
+
 async def _budget(session, account_id: int) -> tuple[int, int]:
     """How many jobs may transfer at once on this account, and the connections each gets.
 
@@ -182,7 +202,7 @@ async def restore_file(file_id: int, dest_type: str = "container", target: str =
             mtime_ns=entry.mtime_ns,
             parts=await _parts_of(session, file_id),
         )
-        account_id = job.account_id
+        account_id = await reader_account(session, channel, job)
         peer = manager.input_peer(channel)
         concurrency, max_connections = await _budget(session, account_id)
 
@@ -256,7 +276,7 @@ async def restore_folder(
         if not items:
             raise ValueError("There is nothing to restore in this folder")
 
-        account_id = channel.account_id
+        account_id = await reader_account(session, channel)
         channel_title = channel.title
         peer = manager.input_peer(channel)
         concurrency, max_connections = await _budget(session, account_id)

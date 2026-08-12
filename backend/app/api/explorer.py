@@ -47,7 +47,7 @@ from ..security import (
     create_download_ticket,
     decode_download_ticket,
 )
-from ..sync.restore import cancel_restore, restore_file, restore_folder
+from ..sync.restore import cancel_restore, reader_account, restore_file, restore_folder
 from ..telegram.fast_transfer import stream_document
 from ..telegram.flood import FloodGate
 from ..telegram.manager import account_budget, manager
@@ -286,7 +286,8 @@ async def create_ticket(
     job = await session.get(SyncJob, entry.job_id)
     if job is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "The job of this file no longer exists")
-    await _connected_client(job.account_id)
+    channel = await session.get(Channel, job.channel_id)
+    await _connected_client(await _reader(session, channel, job))
 
     ticket = create_download_ticket(user.id, entry.id)
     return DownloadTicketOut(
@@ -359,6 +360,14 @@ def _content_disposition(name: str) -> str:
     """
     fallback = name.encode("ascii", "replace").decode("ascii").replace('"', "_")
     return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(name)}"
+
+
+async def _reader(session, channel, job=None) -> int:
+    """The account this channel is read back through, as an error the interface can show."""
+    try:
+        return await reader_account(session, channel, job)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
 
 
 async def _connected_client(account_id: int):
@@ -483,10 +492,13 @@ async def download_file(
     if not parts:
         raise HTTPException(status.HTTP_409_CONFLICT, "No parts recorded for this file")
 
-    account = await session.get(TelegramAccount, job.account_id)
+    # A file uploaded by a bot set is read back through an account all the same: bots
+    # cannot serve a download to the browser any more than they can browse.
+    account_id = await _reader(session, channel, job)
+    account = await session.get(TelegramAccount, account_id)
     concurrency, max_connections = account_budget(account)
     peer = manager.input_peer(channel)
-    client = await _connected_client(job.account_id)
+    client = await _connected_client(account_id)
 
     log.info(
         "Browser download of %s, %d bytes in %d part(s)", entry.rel_path, entry.size, len(parts)
@@ -494,7 +506,7 @@ async def download_file(
 
     return StreamingResponse(
         _stream_file(
-            client, job.account_id, peer, parts, entry.rel_path, concurrency, max_connections
+            client, account_id, peer, parts, entry.rel_path, concurrency, max_connections
         ),
         media_type=mimetypes.guess_type(entry.name)[0] or "application/octet-stream",
         headers={

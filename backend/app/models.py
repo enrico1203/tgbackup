@@ -45,6 +45,12 @@ READABLE_STATES = ("uploaded", "trashed")
 # See telegram/manager.py, account_budget.
 DEFAULT_MAX_CONNECTIONS = 15
 
+# How many connections one bot of a set opens. A bot is an account of its own, so the
+# ceiling of 20 per data center is its own too and five bots are five budgets; what stops
+# this being 20 is the host, not Telegram, since the five sets of connections share one
+# line. Eight is enough to fill it and leaves room for the account jobs running beside.
+DEFAULT_BOT_CONNECTIONS = 8
+
 # An entry rebuilt by reading the channel has no date: the caption of a message carries the
 # name, the folder and the part number, never the modification time. This value marks that
 # absence, and the first scan of the job adopts the date of the source instead of taking
@@ -103,12 +109,81 @@ class TelegramAccount(Base):
     )
 
 
+class BotSet(Base):
+    """A group of bots that are admins of the same channel, used as one uploader.
+
+    A bot is a Telegram account with limits of its own, so N bots in a channel are N
+    independent uploaders and a job pointed at a set sends N different files at once, one
+    per bot. What they cannot do is what a bot cannot do anywhere: they have no dialog
+    list to pick a channel from, no Saved Messages to report into, and they are limited to
+    2 GB per file like any account without Premium.
+
+    `api_id` and `api_hash` are here because signing a bot in over MTProto needs them
+    beside the token (`auth.importBotAuthorization`), and the HTTP Bot API is not an
+    option: it stops an upload at 50 MB. They are ordinarily copied from an account
+    already linked, since any application credentials work for any bot.
+    """
+
+    __tablename__ = "bot_sets"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128))
+    api_id: Mapped[int] = mapped_column(Integer)
+    api_hash_enc: Mapped[str] = mapped_column(Text)
+
+    # Connections one bot of this set opens, 1 to 20. It multiplies by the bots actually
+    # working: five bots at eight connections are forty sockets against three data centers.
+    max_connections: Mapped[int] = mapped_column(Integer, default=DEFAULT_BOT_CONNECTIONS)
+    # How many jobs may transfer on this set at the same time. The bots are leased one per
+    # file, so two jobs sharing a set share its bots and neither gets the whole width.
+    max_concurrent_jobs: Mapped[int] = mapped_column(Integer, default=1)
+    # A bot is never Premium: 2 GB is the ceiling and 1.9 GB the part size that stays under
+    # it with room for the container of the message.
+    default_part_size: Mapped[int] = mapped_column(BigInteger, default=1_900_000_000)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    bots: Mapped[list[Bot]] = relationship(
+        back_populates="bot_set", cascade="all, delete-orphan", order_by="Bot.id"
+    )
+
+
+class Bot(Base):
+    """One bot of a set: a token, the session it produced, and what Telegram calls it."""
+
+    __tablename__ = "bots"
+    __table_args__ = (UniqueConstraint("bot_set_id", "tg_id", name="uq_bot_set_tg"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    bot_set_id: Mapped[int] = mapped_column(ForeignKey("bot_sets.id", ondelete="CASCADE"))
+    token_enc: Mapped[str] = mapped_column(Text)
+    session_enc: Mapped[str | None] = mapped_column(Text)
+
+    tg_id: Mapped[int | None] = mapped_column(BigInteger)
+    username: Mapped[str | None] = mapped_column(String(128))
+    first_name: Mapped[str | None] = mapped_column(String(128))
+
+    # A bot left out of the rotation without deleting it, which is what somebody does with
+    # one that was banned or removed from the channel.
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # connected, disconnected, error
+    status: Mapped[str] = mapped_column(String(32), default="disconnected")
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    bot_set: Mapped[BotSet] = relationship(back_populates="bots")
+
+
 class Channel(Base):
     __tablename__ = "channels"
     __table_args__ = (UniqueConstraint("account_id", "tg_id", name="uq_channel_account_tg"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    account_id: Mapped[int] = mapped_column(
+    # Null on a channel this installation only knows through a bot set. A bot resolves its
+    # own peer from the id alone, with a zero access hash, so a row with no account behind
+    # it is still enough to upload into: what it cannot serve is everything that needs a
+    # user, that is browsing, restore, download jobs and the channel check.
+    account_id: Mapped[int | None] = mapped_column(
         ForeignKey("telegram_accounts.id", ondelete="CASCADE")
     )
     tg_id: Mapped[int] = mapped_column(BigInteger)
@@ -133,7 +208,7 @@ class Channel(Base):
     last_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_check_result: Mapped[str | None] = mapped_column(Text)
 
-    account: Mapped[TelegramAccount] = relationship(back_populates="channels")
+    account: Mapped[TelegramAccount | None] = relationship(back_populates="channels")
 
 
 class SyncJob(Base):
@@ -141,8 +216,22 @@ class SyncJob(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(128))
-    account_id: Mapped[int] = mapped_column(ForeignKey("telegram_accounts.id", ondelete="CASCADE"))
+    # Exactly one of the two carries the job, which the API enforces rather than the DDL:
+    # an account signs in as a person and uploads one file at a time, a bot set is several
+    # accounts and uploads one file per bot. The channel row is the same either way, since
+    # a bot ignores the stored access_hash and resolves its own peer, so moving a job from
+    # one transport to the other leaves the index exactly where it is.
+    account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("telegram_accounts.id", ondelete="CASCADE")
+    )
+    bot_set_id: Mapped[int | None] = mapped_column(ForeignKey("bot_sets.id", ondelete="CASCADE"))
     channel_id: Mapped[int] = mapped_column(ForeignKey("channels.id", ondelete="CASCADE"))
+
+    # How many files this job uploads at the same time on a bot set, one bot each. 0 means
+    # as many as the set has, which is what somebody who built a set of five bots wants
+    # from it. Ignored on an account: one account is one budget of 20 connections, and
+    # splitting it across files would only make each of them slower.
+    parallel_files: Mapped[int] = mapped_column(Integer, default=0)
 
     # local: folder mounted in the container. rclone: remote read through the API, no mount.
     source_type: Mapped[str] = mapped_column(String(16), default="local")
@@ -205,7 +294,8 @@ class SyncJob(Base):
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
-    account: Mapped[TelegramAccount] = relationship()
+    account: Mapped[TelegramAccount | None] = relationship()
+    bot_set: Mapped[BotSet | None] = relationship()
     channel: Mapped[Channel] = relationship()
 
 

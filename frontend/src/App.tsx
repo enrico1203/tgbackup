@@ -15,6 +15,7 @@ import Login from "./pages/Login";
 import Maintenance from "./pages/Maintenance";
 import Runs from "./pages/Runs";
 import Settings from "./pages/Settings";
+import TelegramBots from "./pages/TelegramBots";
 import { Spinner } from "./components/ui";
 
 export default function App() {
@@ -43,6 +44,7 @@ export default function App() {
             <Route path="jobs" element={<Jobs />} />
             <Route path="downloads" element={<Downloads />} />
             <Route path="accounts" element={<Accounts />} />
+            <Route path="bots" element={<TelegramBots />} />
             <Route path="explorer" element={<Explorer />} />
             <Route path="files" element={<Files />} />
             <Route path="runs" element={<Runs />} />

@@ -61,7 +61,7 @@ export default function JobActivity({ progress }: { progress: JobProgress }) {
           {formatBytes(bytes)}
         </span>
         <span style={{ color: "var(--muted)" }}>
-          another job is uploading on the same account
+          another job is uploading on the same account or bot set
         </span>
       </div>
     );
@@ -83,14 +83,36 @@ export default function JobActivity({ progress }: { progress: JobProgress }) {
     );
   }
 
+  // A job on a bot set carries one file per bot, so there is no single current file: each
+  // worker says what it is holding. With one worker, which is every job on an account, the
+  // list says exactly what the single line said and the line is shown instead.
+  const workers = (progress.workers ?? []).filter((worker) => worker.current_file);
+
   return (
     <>
-      <div className="mono truncate" style={{ color: "var(--muted)" }}>
-        {progress.current_file ?? "preparing"}
-        {progress.current_parts > 1
-          ? ` (part ${progress.current_part} of ${progress.current_parts})`
-          : ""}
-      </div>
+      {workers.length > 1 ? (
+        <div style={{ display: "grid", gap: 2 }}>
+          {workers.map((worker) => (
+            <div
+              key={worker.slot}
+              className="mono truncate"
+              style={{ color: "var(--muted)", fontSize: 12 }}
+            >
+              {worker.label}: {worker.current_file}
+              {worker.current_parts > 1
+                ? ` (part ${worker.current_part} of ${worker.current_parts})`
+                : ""}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="mono truncate" style={{ color: "var(--muted)" }}>
+          {progress.current_file ?? "preparing"}
+          {progress.current_parts > 1
+            ? ` (part ${progress.current_part} of ${progress.current_parts})`
+            : ""}
+        </div>
+      )}
       <FloodNotice
         seconds={progress.flood_wait_seconds}
         waits={progress.flood_waits}

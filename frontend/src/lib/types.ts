@@ -36,9 +36,56 @@ export interface AccountStep {
   account: Account | null;
 }
 
+/** A bot of a set. The token is never returned: it is stored encrypted and only ever
+ *  travels towards the server. */
+export interface Bot {
+  id: number;
+  bot_set_id: number;
+  tg_id: number | null;
+  username: string | null;
+  first_name: string | null;
+  enabled: boolean;
+  status: string;
+  last_error: string | null;
+  created_at: string;
+  connected: boolean;
+}
+
+export interface BotSet {
+  id: number;
+  name: string;
+  api_id: number;
+  max_connections: number;
+  max_concurrent_jobs: number;
+  default_part_size: number;
+  created_at: string;
+  bots: Bot[];
+  /** Enabled and connected right now: how many files a job on this set can carry at once. */
+  bots_ready: number;
+  jobs_count: number;
+}
+
+/** What one bot of a set can do in one channel. Uploading needs membership, and removing
+ *  the files that disappear from the source needs the right to delete. */
+export interface BotChannelStatus {
+  bot_id: number;
+  label: string;
+  member: boolean;
+  admin: boolean;
+  can_delete: boolean;
+  error: string | null;
+}
+
+export interface BotSetChannelCheck {
+  channel_id: number;
+  channel_title: string;
+  bots: BotChannelStatus[];
+}
+
 export interface Channel {
   id: number;
-  account_id: number;
+  /** Null on a channel this installation only knows through a bot set. */
+  account_id: number | null;
   tg_id: number;
   title: string;
   username: string | null;
@@ -67,7 +114,11 @@ export interface JobStats {
 export interface Job {
   id: number;
   name: string;
-  account_id: number;
+  /** Exactly one of the two: an account uploads one file at a time, a bot set one per bot. */
+  account_id: number | null;
+  bot_set_id: number | null;
+  /** Files at once on a bot set, 0 for as many as it has bots. Ignored on an account. */
+  parallel_files: number;
   channel_id: number;
   source_type: "local" | "rclone";
   local_path: string;
@@ -95,7 +146,9 @@ export interface Job {
   last_finished_at: string | null;
   next_run_at: string | null;
   created_at: string;
+  /** The name of whatever carries the job, account or bot set. */
   account_label: string;
+  transport: "account" | "botset";
   channel_title: string;
   channel_tg_id: number;
   stats: JobStats;
@@ -377,6 +430,16 @@ export interface Dashboard {
   recent_runs: JobRun[];
 }
 
+/** One file in flight and the bot carrying it. A job on an account has a single one and
+ *  says the same thing `current_file` does; a job on a bot set has one per bot. */
+export interface UploadWorker {
+  slot: number;
+  label: string;
+  current_file: string | null;
+  current_part: number;
+  current_parts: number;
+}
+
 export interface JobProgress {
   job_id: number;
   name: string;
@@ -384,6 +447,8 @@ export interface JobProgress {
   current_file: string | null;
   current_part: number;
   current_parts: number;
+  /** Optional: an older backend sends no workers and the single file is shown instead. */
+  workers?: UploadWorker[];
   scanned_files: number;
   scanned_dirs: number;
   scanned_bytes: number;

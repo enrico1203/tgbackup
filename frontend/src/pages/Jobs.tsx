@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router";
 import {
   BellOff,
+  Bot as BotIcon,
   CalendarClock,
   CloudUpload,
   Filter,
@@ -16,6 +17,7 @@ import {
   ShieldAlert,
   Square,
   Trash2,
+  UserCircle2,
 } from "lucide-react";
 
 import { api } from "../lib/api";
@@ -25,7 +27,7 @@ import { isHeld, isLimited } from "../components/FloodNotice";
 import JobActivity, { phaseLabel } from "../components/JobActivity";
 import ScheduleGrid, { ALWAYS, describeSchedule } from "../components/ScheduleGrid";
 import RemoteBrowser from "../components/RemoteBrowser";
-import type { Account, Channel, Job, RcloneStatus } from "../lib/types";
+import type { Account, BotSet, Channel, Job, RcloneStatus } from "../lib/types";
 import {
   Alert,
   Card,
@@ -49,8 +51,19 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
     queryKey: ["accounts"],
     queryFn: () => api.get<Account[]>("/api/accounts"),
   });
+  const { data: botSets } = useQuery({
+    queryKey: ["botsets"],
+    queryFn: () => api.get<BotSet[]>("/api/botsets"),
+  });
 
   const [name, setName] = useState(job?.name ?? "");
+  // What carries the job. One account uploads one file at a time; a bot set uploads one
+  // file per bot, each bot being a Telegram account with limits of its own.
+  const [transport, setTransport] = useState<"account" | "botset">(
+    job?.bot_set_id ? "botset" : "account",
+  );
+  const [botSetId, setBotSetId] = useState<number | null>(job?.bot_set_id ?? null);
+  const [parallelFiles, setParallelFiles] = useState(String(job?.parallel_files ?? 0));
   const [accountId, setAccountId] = useState<number | null>(job?.account_id ?? null);
   const [channelId, setChannelId] = useState<number | null>(job?.channel_id ?? null);
   const [sourceType, setSourceType] = useState<"local" | "rclone">(job?.source_type ?? "local");
@@ -81,7 +94,16 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
   const { data: channels } = useQuery({
     queryKey: ["channels", accountId],
     queryFn: () => api.get<Channel[]>(`/api/accounts/${accountId}/channels`),
-    enabled: accountId !== null,
+    enabled: transport === "account" && accountId !== null,
+  });
+
+  // A bot has no list of chats of its own, so what it can be pointed at is every channel
+  // this installation knows, whichever account discovered it. Membership is checked when
+  // the job is saved, and bot by bot on the bots page.
+  const { data: botChannels } = useQuery({
+    queryKey: ["botset-channels", botSetId],
+    queryFn: () => api.get<Channel[]>(`/api/botsets/${botSetId}/channels`),
+    enabled: transport === "botset" && botSetId !== null,
   });
 
   const { data: rcloneStatus } = useQuery({
@@ -90,13 +112,20 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
   });
 
   const account = accounts?.find((item) => item.id === accountId);
-  const movingAccount = job !== null && accountId !== null && accountId !== job.account_id;
+  const botSet = botSets?.find((item) => item.id === botSetId);
+  const movingAccount =
+    job !== null && transport === "account" && accountId !== null && accountId !== job.account_id;
+  const movingToBots = job !== null && transport === "botset" && botSetId !== job.bot_set_id;
+  // The ceiling of whatever carries it: a bot is never Premium, so a set splits at 2 GB
+  // however large the parts of the account the job may be leaving.
+  const partCeiling =
+    transport === "botset" ? (botSet?.default_part_size ?? 0) : (account?.default_part_size ?? 0);
 
   useEffect(() => {
-    if (!job && account && partSize === "") {
-      setPartSize(String(account.default_part_size / GIGA));
+    if (!job && partSize === "" && partCeiling > 0) {
+      setPartSize(String(partCeiling / GIGA));
     }
-  }, [account, job, partSize]);
+  }, [partCeiling, job, partSize]);
 
   // The account of an existing job has just been changed. Channel rows are per account,
   // so the one that was selected belongs to the account being left: the row the new
@@ -113,7 +142,9 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
     mutationFn: async () => {
       const payload = {
         name: name.trim(),
-        account_id: accountId,
+        account_id: transport === "account" ? accountId : null,
+        bot_set_id: transport === "botset" ? botSetId : null,
+        parallel_files: Number(parallelFiles) || 0,
         channel_id: channelId,
         source_type: sourceType,
         local_path: sourceType === "local" ? localPath.trim() : "",
@@ -148,13 +179,17 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
     onError: (exc) => setError(exc instanceof Error ? exc.message : "Saving failed"),
   });
 
-  const privateChannels = (channels ?? []).filter((channel) => channel.is_private);
+  const privateChannels =
+    transport === "botset"
+      ? (botChannels ?? [])
+      : (channels ?? []).filter((channel) => channel.is_private);
   const sourceReady = sourceType === "local" ? Boolean(localPath.trim()) : Boolean(remote.trim());
   // A job being moved to another account may have no channel selected: the channel it
   // already writes to is the one it keeps, and the server finds that account's row for it.
   const channelReady = channelId !== null || movingAccount;
+  const carrierReady = transport === "botset" ? botSetId !== null : accountId !== null;
   const valid =
-    Boolean(name.trim()) && accountId !== null && channelReady && sourceReady &&
+    Boolean(name.trim()) && carrierReady && channelReady && sourceReady &&
     Number(intervalHours) > 0 && Number(partSize) > 0;
 
   return (
@@ -185,34 +220,99 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
         <input value={name} onChange={(e) => setName(e.target.value)} autoFocus />
       </Field>
 
-      <div className="grid-2">
-        <Field label="Telegram account">
-          <select
-            value={accountId ?? ""}
-            onChange={(e) => {
-              setAccountId(Number(e.target.value));
+      <Field label="Uploaded by">
+        <div className="row" style={{ gap: 8 }}>
+          <button
+            type="button"
+            className={transport === "account" ? "btn small" : "btn ghost small"}
+            onClick={() => {
+              setTransport("account");
               setChannelId(null);
             }}
           >
-            <option value="" disabled>
-              Pick an account
-            </option>
-            {(accounts ?? []).map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.label}
+            <UserCircle2 size={13} />
+            Telegram account
+          </button>
+          <button
+            type="button"
+            className={transport === "botset" ? "btn small" : "btn ghost small"}
+            onClick={() => {
+              setTransport("botset");
+              setChannelId(null);
+            }}
+            disabled={(botSets ?? []).length === 0}
+            title={
+              (botSets ?? []).length === 0
+                ? "Create a bot set on the Telegram bots page first"
+                : undefined
+            }
+          >
+            <BotIcon size={13} />
+            Bot set
+          </button>
+        </div>
+      </Field>
+
+      <div className="grid-2">
+        {transport === "account" ? (
+          <Field label="Telegram account">
+            <select
+              value={accountId ?? ""}
+              onChange={(e) => {
+                setAccountId(Number(e.target.value));
+                setChannelId(null);
+              }}
+            >
+              <option value="" disabled>
+                Pick an account
               </option>
-            ))}
-          </select>
-        </Field>
+              {(accounts ?? []).map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+        ) : (
+          <Field
+            label="Bot set"
+            hint={
+              botSet
+                ? `${botSet.bots_ready} of ${botSet.bots.length} bots ready`
+                : "Every bot has to be an administrator of the channel"
+            }
+          >
+            <select
+              value={botSetId ?? ""}
+              onChange={(e) => {
+                setBotSetId(Number(e.target.value));
+                setChannelId(null);
+              }}
+            >
+              <option value="" disabled>
+                Pick a set
+              </option>
+              {(botSets ?? []).map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name} ({item.bots.length} bots)
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
 
         <Field label="Destination private channel">
           <select
             value={channelId ?? ""}
-            disabled={accountId === null}
+            disabled={!carrierReady}
             onChange={(e) => setChannelId(Number(e.target.value))}
           >
             <option value="" disabled>
-              {accountId === null ? "Pick an account first" : "Pick a channel"}
+              {!carrierReady
+                ? "Pick who uploads first"
+                : transport === "botset" && privateChannels.length === 0
+                  ? "No channel known: add it on the Telegram bots page"
+                  : "Pick a channel"}
             </option>
             {privateChannels.map((channel) => (
               <option key={channel.id} value={channel.id}>
@@ -222,6 +322,36 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
           </select>
         </Field>
       </div>
+
+      {transport === "botset" ? (
+        <Field
+          label="Files uploaded at the same time"
+          hint={`0 means as many as the set has bots${
+            botSet ? `, that is ${botSet.bots.length}` : ""
+          }. One bot carries one file, so more than that changes nothing.`}
+        >
+          <input
+            value={parallelFiles}
+            inputMode="numeric"
+            onChange={(e) => setParallelFiles(e.target.value.replace(/\D/g, ""))}
+          />
+        </Field>
+      ) : null}
+
+      {transport === "botset" ? (
+        <Alert tone="info">
+          Every enabled bot of the set has to be in {job ? job.channel_title : "the channel"} as
+          an administrator able to post and to delete messages: posting is what uploads,
+          deleting is what removes from the channel the files that disappear from the source.
+          The set is checked when this job is saved. Files are split at 2 GB, since no bot is
+          Premium, and browsing, restoring and the channel check still go through a user
+          account that is a member of the channel.
+          {movingToBots && job
+            ? " The index of the job is not touched: the messages belong to the channel, so"
+              + " what is already up there stays readable and deletable."
+            : ""}
+        </Alert>
+      ) : null}
 
       {movingAccount ? (
         <Alert tone="info">

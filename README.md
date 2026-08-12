@@ -61,6 +61,9 @@ for changing the code.
 - **Low impact scanning**: a file's identity is `(path, size, mtime)`, read with a single `stat`
   locally or from the listing on remotes. File contents are never read, no hashing.
 - **Fast upload**: up to 20 parallel MTProto connections on the same account.
+- **Bot sets**: a group of bots that are administrators of the same channel, used by a sync job as
+  one uploader. Each bot is a Telegram account of its own, so a job on a set of five uploads five
+  different files at the same time, with five separate sets of connections and five separate limits.
 - **Automatic split**: files above the threshold (3.9 GB with Telegram Premium, 1.9 GB without) are
   divided into parts, each with its own message id stored in the database.
 - **A real mirror**: a renamed or modified file means deletion from the channel and a fresh upload,
@@ -431,6 +434,46 @@ is the last thing in `docker compose logs backend`.
    brings back a whole channel.
 8. **Export**: moves a channel to another installation.
 9. **Maintenance**: checks a channel against the index, or rebuilds the index by reading it.
+
+## Bot sets
+
+A **bot set** is several Telegram bots that are administrators of the same channel. A sync job can
+run on one instead of on an account, and then it uploads **one file per bot at the same time**: a bot
+is a Telegram account of its own, with its own twenty connections and its own limits, so five bots
+are five uploaders and not one uploader divided by five.
+
+How to build one, on the Telegram bots page:
+
+1. **New set**. Give it a name and pick the account whose api_id and api_hash the bots sign in with.
+   A bot token alone cannot open the MTProto connection that carries the files, and those credentials
+   identify the application rather than the user, so the ones already here work for any bot. An
+   installation with no account at all can type a pair by hand.
+2. **Add the bots**, one token each, from @BotFather. The token is stored encrypted and the bot is
+   connected on the spot, so a token typed wrong is an error on the button and not a job that fails
+   at three in the morning.
+3. **Add each bot to the channel as an administrator**, from Telegram, with permission to post and to
+   delete messages. Posting is what uploads; deleting is what removes from the channel the files that
+   disappear from the source, and a bot without it will do everything else perfectly while keeping
+   them for ever. The page checks both, bot by bot.
+4. **Point a job at the set**: on the job form, Uploaded by → Bot set. *Files uploaded at the same
+   time* is 0 for as many as the set has bots.
+
+What a bot cannot do, and what follows from it:
+
+- **It has no list of chats**, so a channel is named rather than picked: paste its id or its username
+  on the bots page. A channel already known here is reused, never duplicated, so a job moved from an
+  account onto a set keeps its channel and its whole index.
+- **It is never Premium**, so files are split at 1.9 GB whatever the account beside it can do.
+- **It has no Saved Messages**, so the run reports of a job on a set are sent through an account:
+  the one chosen in the settings, or any connected one.
+- **It only uploads.** Browsing the channel, restoring, downloading to the browser, download jobs and
+  the channel check all read messages back, and for that an account that is a member of the channel
+  is still needed.
+
+The number of connections is set per bot, not for the set: five bots at eight connections open forty
+in total, and what limits that is the line of the machine rather than Telegram, which counts them per
+account. If Telegram starts holding one bot back, that bot alone slows down and the others carry on,
+which is the whole reason for having several.
 
 ## Changing the account of a job
 
