@@ -195,14 +195,25 @@ async def send_transfer_request(
             result = await call_with_timeout(
                 sender.send(request), what, cancel, settings.telegram_part_timeout
             )
-        except TimeoutError:
+        except (TimeoutError, OSError) as exc:
+            # Silence and a broken connection are the same event seen from two sides. When
+            # the set of senders is cut, some are left waiting for an answer that never
+            # comes and the others are told at once, as ConnectionError, that there is
+            # nothing to write to; observed together, fifteen parts timing out while four
+            # raised. Answering only the first half meant the four killed the slice half a
+            # second after the fifteen had been saved, so the whole file was read again
+            # from its first byte anyway. Both are answered by the same thing: this
+            # connection is finished, build another and send the part on it.
             silences += 1
             if renew is None or silences > SILENCE_RETRIES:
                 raise
             log.warning(
-                "No answer for %s in %.0fs, sending it again on a new connection "
-                "(silence %d of %d)",
-                what, settings.telegram_part_timeout, silences, SILENCE_RETRIES,
+                "%s, sending it again on a new connection (silence %d of %d)",
+                f"No answer for {what} in {settings.telegram_part_timeout:.0f}s"
+                if isinstance(exc, TimeoutError)
+                else f"The connection carrying {what} broke ({exc})",
+                silences,
+                SILENCE_RETRIES,
             )
             if silences > 1 and flood is not None:
                 await flood.stalled()

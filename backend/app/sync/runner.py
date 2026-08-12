@@ -721,10 +721,15 @@ class JobRunner:
                 await flood.flooded(exc.seconds)
             except asyncio.CancelledError:
                 raise JobCancelled() from None
-            except Exception:
+            except Exception as exc:
                 if attempt >= 3:
                     raise
-                log.warning("Retrying the upload of %s (attempt %d)", file_name, attempt + 1)
+                # With the reason: an attempt that says only that it is starting again
+                # leaves the log unable to answer why a file took four times as long.
+                log.warning(
+                    "Retrying the upload of %s (attempt %d): %s: %s",
+                    file_name, attempt + 1, type(exc).__name__, exc,
+                )
                 # The bytes of the failed attempt were already counted: the slice restarts
                 # from zero and the speed estimate settles again by itself.
                 await asyncio.sleep(5 * attempt)
