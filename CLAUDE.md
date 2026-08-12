@@ -521,6 +521,19 @@ turns it into `JobCancelled`, `_upload_with_retry` and `_publish_part` on a sync
 loop on a download job, the file loop on a restore: a bare cancellation escaping `execute_job` would
 skip the block that writes the status back and leave the job `running` with nothing running.
 
+**A one second wait is a pace, not a limit** (`SHORT_WAIT_SECONDS`, measured 2026-08-12). The ladder
+below was built for an account told to wait sixteen seconds over and over, and applying it to
+everything was wrong in the other direction. Five bots uploading parts get `FLOOD_WAIT_1` and
+`FLOOD_WAIT_2` constantly while Telegram keeps taking the bytes: that is the server giving the
+transfer its pace. Answered with the ladder it became thirty seconds of silence, then sixty, then a
+hundred and twenty, per bot, and the run spent its time inside a backoff of its own making rather
+than inside anything Telegram had asked for. So a wait of five seconds or less is obeyed for exactly
+as long as it says, climbs nothing, and is not counted as an event: a transfer being paced is a
+transfer that is working, and marking it limited would put it in the same state as one that has
+stopped. It is held apart from `remaining` as well, or the interface would paint the job red once a
+second. What pacing that never lets up gets is `cut()`, one per minute of it, which lowers the
+connection budget: the answer to being paced is to ask for less, not to sleep longer.
+
 **A flood wait is an instruction, not an error** (`telegram/flood.py`, measured 2026-08-08). Telethon
 sleeps a flood wait shorter than `flood_sleep_threshold` (60 s) and **counts the sleep as one of
 `request_retries`** (5), so an account limited at a steady 16 s exhausts its attempts and the call

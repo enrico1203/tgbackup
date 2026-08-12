@@ -19,6 +19,15 @@ is answered in hours rather than by asking again every sixteen seconds. It steps
 only after `RESET_SECONDS` of transfers that worked, so a single flood wait in an otherwise
 healthy run costs half a minute and nothing more.
 
+Not every wait is that, though, and treating them alike was its own failure (measured
+2026-08-12, five bots uploading parts). Telegram answers a part with "wait one second" and
+goes on taking the bytes: that is the pace of a transfer that is working, not a punishment,
+and the ladder answered it with thirty seconds of silence, then sixty, then a hundred and
+twenty, per bot. The run then spent its time inside a backoff of its own making. So a wait
+under `SHORT_WAIT_SECONDS` is obeyed for exactly as long as it says and climbs nothing;
+above it, the ladder. Pacing that never lets up is answered by opening fewer connections
+rather than by sleeping longer, which is asking for less instead of waiting more.
+
 The gate is also the only thing that knows the transfer is alive but held, which is a state
 the interface had no way to show: a job stuck at zero bytes looked exactly like a job that
 was slow. `snapshot` travels inside the progress frame and the browser paints it red.
@@ -68,6 +77,23 @@ LIMIT_MEMORY_SECONDS = 900.0
 CONNECTION_FLOOR = 2
 GROW_AFTER_SECONDS = 300.0
 
+# A wait this short is not a limit, it is the server giving the transfer its pace, and it
+# is answered by waiting exactly that long (measured 2026-08-12, bots uploading parts:
+# Telegram asks for one to three seconds and keeps taking the bytes). The ladder exists for
+# the other thing, an account told to wait sixteen seconds over and over, where obeying to
+# the letter and asking again the instant it expires is what keeps it pinned. Answering a
+# one second pace with thirty seconds of silence, then sixty, then a hundred and twenty, is
+# the same mistake in the other direction: the run then spends its time inside a backoff of
+# its own making rather than inside anything Telegram asked for.
+SHORT_WAIT_SECONDS = 5.0
+
+# Pacing that never lets up is a limit after all, and the answer to it is not to sleep
+# longer but to ask for less: this many short waits inside the window count as one cut, so
+# the next slice opens fewer connections. Counted per window rather than per wait, or a
+# transfer being paced steadily would walk straight down to the floor.
+PACE_WINDOW_SECONDS = 60.0
+PACE_STORM = 20
+
 
 class FloodGate:
     """The wait every connection of one run observes together.
@@ -88,6 +114,13 @@ class FloodGate:
         self._last_cut = 0.0
         self._allowed: int | None = None
         self._last_grow = 0.0
+        # The pace is held apart from the ladder: it delays the parts exactly as a wait
+        # does, and it is deliberately invisible to `remaining`, so a second of pacing is
+        # not painted as a job being held. See flooded.
+        self._paced_until = 0.0
+        self._pace_window = 0.0
+        self._pace_in_window = 0
+        self.paced = 0
         self.waits = 0
         self.cuts = 0
 
@@ -147,12 +180,18 @@ class FloodGate:
         return max(1, min(ceiling, self._allowed))
 
     def remaining(self) -> float:
+        """How long the gate is held for, which is the ladder and not the pace.
+
+        The pace is left out on purpose: it is a second or two, it is what a healthy
+        transfer looks like on this server, and the interface would paint the job red for
+        it once a second.
+        """
         return max(0.0, self._until - time.monotonic())
 
     async def hold(self) -> None:
         """Waits for the gate to open. Called before every request, cheap when open."""
         while True:
-            left = self.remaining()
+            left = max(self.remaining(), self._paced_until - time.monotonic())
             if left <= 0:
                 return
             if self._cancel is not None and self._cancel.is_set():
@@ -160,11 +199,42 @@ class FloodGate:
             await asyncio.sleep(min(left, MAX_SLEEP))
 
     async def flooded(self, seconds: float) -> None:
-        """Records a flood wait, then holds until it has passed."""
+        """Records a flood wait, then holds until it has passed.
+
+        Two different things arrive here. A short one is the server pacing the transfer and
+        is answered by waiting exactly as long as it said; anything longer is a limit, and
+        that is what the ladder is for.
+        """
+        asked = float(seconds)
+        if 0 < asked <= SHORT_WAIT_SECONDS:
+            await self._pace(asked)
+            return
         label = self._label or "the transfer"
-        await self._close(
-            float(seconds) + 1.0, f"asked {label} to wait {float(seconds):.0f}s"
-        )
+        await self._close(asked + 1.0, f"asked {label} to wait {asked:.0f}s")
+
+    async def _pace(self, seconds: float) -> None:
+        """Obeys a short wait without climbing anything.
+
+        It is not counted as an event either: a transfer that is being given its pace is a
+        transfer that is working, and calling it a limit would put a job that is moving
+        bytes at full speed in the same state as one that has stopped. What it does count
+        is the storm: pacing that will not let up is answered by opening fewer connections,
+        which is asking for less rather than sleeping longer.
+        """
+        now = time.monotonic()
+        self.paced += 1
+        if now - self._pace_window > PACE_WINDOW_SECONDS:
+            self._pace_window = now
+            self._pace_in_window = 0
+        self._pace_in_window += 1
+        if self._pace_in_window == PACE_STORM:
+            log.info(
+                "%s has been paced %d times in a minute: asking for fewer connections",
+                self._label or "The transfer", PACE_STORM,
+            )
+            self.cut()
+        self._paced_until = max(self._paced_until, now + seconds + 0.2)
+        await self.hold()
 
     async def stalled(self) -> None:
         """Records silence where an answer was due, and holds exactly as a wait does.
@@ -216,6 +286,10 @@ class FloodGate:
             "flood_wait_seconds": round(left, 1) if left > 0 else None,
             "flood_wait_total": round(self._total, 1) if left > 0 else None,
             "flood_waits": self.waits,
+            # Short waits obeyed as asked. Not a limit and not painted as one, but worth
+            # carrying: it is the difference between a transfer that is being given its
+            # pace and one that is simply slow.
+            "paced_waits": self.paced,
             # Held right now is one thing and being held back is another: a transfer that
             # is cut every few minutes moves bytes in between, so it never looks stopped
             # and the interface had nothing to say about it. These three are what lets it
@@ -272,6 +346,7 @@ class FloodGroup:
             "flood_wait_seconds": max(waits) if waits else None,
             "flood_wait_total": max(totals) if totals else None,
             "flood_waits": sum(part["flood_waits"] for part in parts),
+            "paced_waits": sum(part["paced_waits"] for part in parts),
             "limited": any(part["limited"] for part in parts),
             "limited_events": sum(part["limited_events"] for part in parts),
             "limited_ago": min(ago) if ago else None,
@@ -285,6 +360,7 @@ EMPTY_SNAPSHOT = {
     "flood_wait_seconds": None,
     "flood_wait_total": None,
     "flood_waits": 0,
+    "paced_waits": 0,
     "limited": False,
     "limited_events": 0,
     "limited_ago": None,
