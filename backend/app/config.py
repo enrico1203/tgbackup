@@ -43,6 +43,19 @@ class Settings(BaseSettings):
     # arrive at.
     telegram_request_timeout: float = 600.0
 
+    # The deadline of one part, which is a different question from the one above. Ten
+    # minutes is the right length for "this call is never coming back" and far too long
+    # for "this part is not coming back": measured on this installation, Telegram takes
+    # two or three hundred megabytes and then stops answering the part requests without
+    # ever sending a flood wait, and the transfer sat at zero for the whole ten minutes
+    # before throwing the slice away and starting it again from the first byte, which on
+    # a file of several gigabytes never finishes. A 512KB part that has not been answered
+    # in two minutes is not answered because of the line: twenty connections that slow
+    # would be moving under a hundred kilobytes a second between them. So the part is
+    # sent again on a connection built for it, which costs one round trip instead of the
+    # whole slice. See `send_transfer_request`.
+    telegram_part_timeout: float = 120.0
+
     # rclone timeouts. These are safety nets against a remote that never answers, not
     # work limits: listing and preview stop on their own once they have what they need,
     # while a job scan can legitimately take a long time on huge remotes.

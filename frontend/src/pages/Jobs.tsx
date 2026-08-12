@@ -575,9 +575,17 @@ function JobCard({ job, onEdit }: { job: Job; onEdit: (job: Job) => void }) {
           ) : null}
 
           {running ? (
-            <button type="button" className="btn ghost small" onClick={() => stop.mutate()}>
-              <Square size={13} />
-              Stop
+            // A stop is a request, not an act: the run ends it at the first place it can,
+            // which on a transfer is between one part and the next. Saying so is the
+            // difference between a button that is working and a button that looks broken.
+            <button
+              type="button"
+              className="btn ghost small"
+              disabled={stop.isPending}
+              onClick={() => stop.mutate()}
+            >
+              {stop.isPending ? <Spinner size={13} /> : <Square size={13} />}
+              {stop.isSuccess ? "Stopping" : "Stop"}
             </button>
           ) : (
             <button type="button" className="btn small" onClick={() => start.mutate()}>
@@ -644,6 +652,7 @@ function JobCard({ job, onEdit }: { job: Job; onEdit: (job: Job) => void }) {
 
         {allow.isError ? <Alert>{(allow.error as Error).message}</Alert> : null}
         {start.isError ? <Alert>{(start.error as Error).message}</Alert> : null}
+        {stop.isError ? <Alert>{(stop.error as Error).message}</Alert> : null}
         {remove.isError ? <Alert>{(remove.error as Error).message}</Alert> : null}
 
         <div className="row wrap" style={{ gap: 24, fontSize: 12.5, color: "var(--muted)" }}>

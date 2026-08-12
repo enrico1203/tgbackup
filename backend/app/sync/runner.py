@@ -135,6 +135,16 @@ class StopSignal:
     def is_set(self) -> bool:
         return self._event.is_set()
 
+    async def wait(self) -> None:
+        """Blocks until a stop is asked for.
+
+        The flag is read between one part and the next, which is enough while the bytes
+        move and useless while a Telegram call hangs: there is no next part to reach. A
+        transfer that can await this races the pending call against the button instead of
+        against the ten minute timeout. See fast_transfer.call_with_timeout.
+        """
+        await self._event.wait()
+
 
 class JobRunner:
     def __init__(self, job_id: int, cancel: StopSignal) -> None:
@@ -669,7 +679,13 @@ class JobRunner:
                         attributes=[DocumentAttributeFilename(file_name)],
                     ),
                     f"the message carrying {file_name}",
+                    self.cancel,
                 )
+            except asyncio.CancelledError:
+                # Same conversion the upload retry makes: a stop has to leave through the
+                # door the run knows, or the status of the job would never be written back
+                # and it would stay "running" with nothing running.
+                raise JobCancelled() from None
             except FloodWaitError as exc:
                 if flood is None:
                     raise

@@ -420,6 +420,33 @@ slice again. The value has to clear what Telethon may legitimately spend inside 
 `request_retries` times, 5 by default, sleeping up to `flood_sleep_threshold`, 60 s by default, on
 each flood wait, so around 300 s of honest waiting.
 
+**A part that is never answered is sent again, not thrown away** (`telegram_part_timeout`, 2 min,
+measured 2026-08-12). Ten minutes is the right length for "this call is never coming back" and the
+wrong one for a part. Observed on this installation, on both accounts and with no flood wait
+anywhere in the log: Telegram takes two or three hundred megabytes on a fresh set of senders and
+then stops answering `upload.saveBigFilePart`, with the twenty connections established, their send
+and receive queues empty and the event loop answering the API in twenty milliseconds. The transfer
+sat at zero for the whole ten minutes, gave up the slice and read it again from its first byte, so a
+file of several gigabytes never reached the end. So a part has a deadline of its own, and silence at
+that deadline is answered by `renew`, which drops that one connection and sends the same part on a
+new one: re-sending is free of consequence, the server keys a part by file id and index. The old
+connection goes before the new one is built, or the twenty per data center would become twenty one.
+A second silence in a row is not one unlucky connection, so it closes the `FloodGate` for the whole
+run through `stalled()`, the same ladder a flood wait climbs, because that is what an unannounced
+limit is. After `SILENCE_RETRIES` (3) the slice is given up, which is where the old behaviour begins.
+Two minutes is a floor, not a guess: twenty connections that slow are moving under a hundred
+kilobytes a second between them, and below that a re-send costs more than it saves.
+
+**Stop is a request the transfer has to be able to hear** (`StopSignal.wait`, `call_with_timeout`).
+The signal is read between one part and the next, which is exactly what is never reached while a
+part hangs: pressing Stop on a job in that state did nothing at all, for up to ten minutes, on a job
+already showing zero bytes. The pending call is now raced against the signal, so a stopped transfer
+leaves at once and nothing is lost, since the parts already sent are recorded and an abandoned slice
+is one the next run starts again. It leaves as `CancelledError` and every path that can see one
+turns it into `JobCancelled`, `_upload_with_retry` and `_publish_part` on a sync job, the transfer
+loop on a download job, the file loop on a restore: a bare cancellation escaping `execute_job` would
+skip the block that writes the status back and leave the job `running` with nothing running.
+
 **A flood wait is an instruction, not an error** (`telegram/flood.py`, measured 2026-08-08). Telethon
 sleeps a flood wait shorter than `flood_sleep_threshold` (60 s) and **counts the sleep as one of
 `request_retries`** (5), so an account limited at a steady 16 s exhausts its attempts and the call

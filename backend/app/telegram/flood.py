@@ -72,7 +72,24 @@ class FloodGate:
             await asyncio.sleep(min(left, MAX_SLEEP))
 
     async def flooded(self, seconds: float) -> None:
-        """Records a flood wait, then holds until it has passed.
+        """Records a flood wait, then holds until it has passed."""
+        label = self._label or "the transfer"
+        await self._close(
+            float(seconds) + 1.0, f"asked {label} to wait {float(seconds):.0f}s"
+        )
+
+    async def stalled(self) -> None:
+        """Records silence where an answer was due, and holds exactly as a wait does.
+
+        A part taken and never answered, twice in a row on connections built for it, is
+        the same instruction as a flood wait given without the courtesy of saying so. It
+        carries no duration, so the ladder alone decides: thirty seconds, then a minute,
+        and so on for as long as the silence lasts.
+        """
+        await self._close(1.0, f"stopped answering {self._label or 'the transfer'}")
+
+    async def _close(self, asked: float, what: str) -> None:
+        """Holds every connection of the run for the longer of `asked` and the ladder.
 
         Only the connection that finds the gate open decides the next delay: the other
         nineteen are about to report the same limit and would otherwise climb the ladder
@@ -80,7 +97,6 @@ class FloodGate:
         it, since the server has just been more specific than the ladder was.
         """
         now = time.monotonic()
-        asked = float(seconds) + 1.0
         if now >= self._until:
             step = float(BACKOFF[min(self._level, len(BACKOFF) - 1)])
             self._level += 1
@@ -88,9 +104,8 @@ class FloodGate:
             self._until = now + max(asked, step)
             self._total = self._until - now
             log.warning(
-                "Telegram asked %s to wait %.0fs%s: holding every connection for %.0fs",
-                self._label or "the transfer",
-                seconds,
+                "Telegram %s%s: holding every connection for %.0fs",
+                what,
                 f" (wait {self.waits} of this run)" if self.waits > 1 else "",
                 self._total,
             )

@@ -420,9 +420,16 @@ function DownloadCard({
           )}
 
           {running ? (
-            <button type="button" className="btn ghost small" onClick={() => stop.mutate()}>
-              <Square size={13} />
-              Stop
+            // Same as on a sync job: the run ends the moment it can, and the button says
+            // the request went through instead of looking as if it had not.
+            <button
+              type="button"
+              className="btn ghost small"
+              disabled={stop.isPending}
+              onClick={() => stop.mutate()}
+            >
+              {stop.isPending ? <Spinner size={13} /> : <Square size={13} />}
+              {stop.isSuccess ? "Stopping" : "Stop"}
             </button>
           ) : (
             <button type="button" className="btn small" onClick={() => start.mutate()}>
@@ -463,6 +470,7 @@ function DownloadCard({
       <div className="card-body">
         {job.last_error ? <Alert>{job.last_error}</Alert> : null}
         {start.isError ? <Alert>{(start.error as Error).message}</Alert> : null}
+        {stop.isError ? <Alert>{(stop.error as Error).message}</Alert> : null}
         {remove.isError ? <Alert>{(remove.error as Error).message}</Alert> : null}
 
         <div className="row wrap" style={{ gap: 24, fontSize: 12.5, color: "var(--muted)" }}>

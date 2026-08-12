@@ -71,8 +71,8 @@ def connection_count(size: int, maximum: int = MAX_CONNECTIONS) -> int:
     return max(1, min(maximum, math.ceil(size / (5 * 1024 * 1024))))
 
 
-async def call_with_timeout(awaitable, what: str):
-    """Awaits a Telegram call, giving up if the answer never arrives.
+async def call_with_timeout(awaitable, what: str, cancel=None, timeout: float | None = None):
+    """Awaits a Telegram call, giving up if the answer never arrives or the run is stopped.
 
     `MTProtoSender.send` hands back a future that is resolved by the receive loop when
     the response comes in, and nothing anywhere resolves it if the response never does.
@@ -81,14 +81,38 @@ async def call_with_timeout(awaitable, what: str):
     blocks with a full buffer, the job keeps its account slot and the transfer sits at
     zero without a single error to show for it. Turning that into an exception is what
     lets the retry above take over, rebuild the reader and start the slice again.
+
+    The stop signal is the other way out, and it is here because the timeout is far too
+    long to be one. A stop is read between parts, which is never reached while a part is
+    pending, so exactly in the state this timeout exists for the button did nothing at
+    all for ten minutes: the transfer showed zero bytes, Stop looked broken, and the job
+    went on holding the account. Racing the call against the signal costs nothing, since
+    a stopped transfer has no use for the answer: the parts already sent are recorded and
+    a slice abandoned here is one the next run does again from its start.
+
+    `timeout` is for the caller that knows better what its call is worth. A part has its
+    own, much shorter, since silence there is answered by sending it again rather than by
+    giving up on everything.
     """
+    limit = settings.telegram_request_timeout if timeout is None else timeout
+    call = asyncio.ensure_future(awaitable)
+    stop = asyncio.ensure_future(cancel.wait()) if cancel is not None else None
     try:
-        return await asyncio.wait_for(awaitable, settings.telegram_request_timeout)
-    except TimeoutError:
-        raise TimeoutError(
-            f"Telegram did not answer for {what} within "
-            f"{settings.telegram_request_timeout:.0f}s"
-        ) from None
+        done, _ = await asyncio.wait(
+            {call} if stop is None else {call, stop},
+            timeout=limit,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if call in done:
+            return call.result()
+        if stop is not None and stop in done:
+            raise asyncio.CancelledError(f"Stopped while waiting for {what}")
+        raise TimeoutError(f"Telegram did not answer for {what} within {limit:.0f}s")
+    finally:
+        if stop is not None:
+            stop.cancel()
+        if not call.done():
+            call.cancel()
 
 
 # What Telethon retries by itself inside `_call`: the server is having a moment and the
@@ -104,8 +128,37 @@ TRANSIENT_ERRORS = (
 TRANSIENT_RETRIES = 5
 TRANSIENT_DELAY = 2.0
 
+# How many times one part may be sent again after silence before the slice is given up.
+# Three is a connection that was unlucky; beyond that the account is being held back and
+# a fourth attempt would only be a fourth request against something that is not answering.
+SILENCE_RETRIES = 3
 
-async def send_transfer_request(sender: MTProtoSender, request, what: str, flood: FloodGate | None):
+
+async def renew_sender(factory, old: MTProtoSender) -> MTProtoSender:
+    """Drops a connection that stopped answering and builds another one in its place.
+
+    The old one goes first and not after: twenty connections per data center is a ceiling
+    Telegram applies to all of them together, and a renewal that overlapped would be the
+    twenty first. Without a factory there is nothing to build, and the part is simply sent
+    again on the connection it has, which is the lesser half of the same answer.
+    """
+    if factory is None:
+        return old
+    try:
+        await old.disconnect()
+    except Exception:
+        pass
+    return await factory()
+
+
+async def send_transfer_request(
+    sender: MTProtoSender,
+    request,
+    what: str,
+    flood: FloodGate | None,
+    cancel=None,
+    renew=None,
+):
     """Sends one part request and decides by itself what to do when it comes back badly.
 
     `client._call` is deliberately bypassed. It would give three things this loop has to
@@ -119,13 +172,42 @@ async def send_transfer_request(sender: MTProtoSender, request, what: str, flood
 
     A raw `MTProtoSender.send` hands back the future the receive loop resolves, raising
     the actual RPC error, which is all this needs.
+
+    Silence is the third case, and the one that has to be answered here rather than by the
+    caller. Telegram takes the part, acknowledges it at the level of the connection and
+    never replies, with no flood wait and no error: measured on this installation after
+    two or three hundred megabytes on a fresh set of senders. The old answer was the ten
+    minute timeout followed by the whole slice being read and uploaded again from its
+    first byte, which on a file of several gigabytes never gets to the end. So the part
+    gets its own deadline and, when it passes, `renew` builds this sender's connection
+    again and the same part is sent on it. Re-sending a part is free of consequence: the
+    server keys it by file id and index, so the second one lands exactly where the first
+    was meant to. A second silence in a row is no longer one connection being unlucky,
+    and the gate is closed for every connection of the run, which is the same answer a
+    flood wait gets because it is the same thing being said less politely.
     """
     attempt = 0
+    silences = 0
     while True:
         if flood is not None:
             await flood.hold()
         try:
-            result = await call_with_timeout(sender.send(request), what)
+            result = await call_with_timeout(
+                sender.send(request), what, cancel, settings.telegram_part_timeout
+            )
+        except TimeoutError:
+            silences += 1
+            if renew is None or silences > SILENCE_RETRIES:
+                raise
+            log.warning(
+                "No answer for %s in %.0fs, sending it again on a new connection "
+                "(silence %d of %d)",
+                what, settings.telegram_part_timeout, silences, SILENCE_RETRIES,
+            )
+            if silences > 1 and flood is not None:
+                await flood.stalled()
+            sender = await renew(sender)
+            continue
         except (FloodWaitError, FloodPremiumWaitError) as exc:
             if flood is None:
                 raise
@@ -158,12 +240,18 @@ class _UploadSender:
         stride: int,
         on_part: ProgressCallback | None,
         flood: FloodGate | None = None,
+        cancel=None,
+        new_sender=None,
     ) -> None:
         self._client = client
         self._sender = sender
         self._stride = stride
         self._on_part = on_part
         self._flood = flood
+        self._cancel = cancel
+        # How this sender builds itself a new connection when the one it has stops
+        # answering. Without it silence has no answer but giving up the slice.
+        self._new_sender = new_sender
         self._pending: asyncio.Task | None = None
         if big:
             self._request = SaveBigFilePartRequest(file_id, index, part_count, b"")
@@ -180,11 +268,20 @@ class _UploadSender:
     async def _send(self, data: bytes) -> None:
         self._request.bytes = data
         await send_transfer_request(
-            self._sender, self._request, f"part {self._request.file_part}", self._flood
+            self._sender,
+            self._request,
+            f"part {self._request.file_part}",
+            self._flood,
+            self._cancel,
+            self._renew,
         )
         self._request.file_part += self._stride
         if self._on_part is not None:
             self._on_part(len(data))
+
+    async def _renew(self, old: MTProtoSender) -> MTProtoSender:
+        self._sender = await renew_sender(self._new_sender, old)
+        return self._sender
 
     async def drain(self) -> None:
         if self._pending is not None:
@@ -219,6 +316,8 @@ class _DownloadSender:
         stride: int,
         count: int,
         flood: FloodGate | None = None,
+        cancel=None,
+        new_sender=None,
     ) -> None:
         self._client = client
         self._sender = sender
@@ -226,13 +325,24 @@ class _DownloadSender:
         self._stride = stride
         self._remaining = count
         self._flood = flood
+        self._cancel = cancel
+        self._new_sender = new_sender
+
+    async def _renew(self, old: MTProtoSender) -> MTProtoSender:
+        self._sender = await renew_sender(self._new_sender, old)
+        return self._sender
 
     async def next(self) -> tuple[int, bytes] | None:
         if self._remaining <= 0:
             return None
         offset = self._request.offset
         result = await send_transfer_request(
-            self._sender, self._request, f"the part at offset {offset}", self._flood
+            self._sender,
+            self._request,
+            f"the part at offset {offset}",
+            self._flood,
+            self._cancel,
+            self._renew,
         )
         self._remaining -= 1
         self._request.offset += self._stride
@@ -359,6 +469,8 @@ async def upload_slice(
             connections,
             on_progress,
             flood,
+            cancel,
+            transferrer._create_sender,
         )
         for index in range(connections)
     ]
@@ -418,6 +530,7 @@ async def _download_senders(
     document: Document,
     connections: int,
     flood: FloodGate | None = None,
+    cancel=None,
 ) -> list[_DownloadSender]:
     """One sender per connection, each taking one part out of `connections`."""
     location = _file_location(document)
@@ -435,6 +548,8 @@ async def _download_senders(
             # Parts assigned to this sender: index, index + connections, and so on.
             len(range(index, part_count, connections)),
             flood,
+            cancel,
+            transferrer._create_sender,
         )
         for index in range(connections)
     ]
@@ -458,7 +573,7 @@ async def download_document(
     """
     size = document.size
     connections = connection_count(size, max(1, min(max_connections, MAX_CONNECTIONS)))
-    senders = await _download_senders(client, document, connections, flood)
+    senders = await _download_senders(client, document, connections, flood, cancel)
 
     written = 0
     lock = asyncio.Lock()
@@ -519,7 +634,7 @@ async def stream_document(
     """
     size = document.size
     connections = connection_count(size, max(1, min(max_connections, MAX_CONNECTIONS)))
-    senders = await _download_senders(client, document, connections, flood)
+    senders = await _download_senders(client, document, connections, flood, cancel)
 
     window = STREAM_WINDOW_PARTS * DOWNLOAD_PART_SIZE
     ready: dict[int, bytes] = {}
