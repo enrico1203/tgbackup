@@ -48,9 +48,9 @@ from ..security import (
     decode_download_ticket,
 )
 from ..sync.restore import cancel_restore, restore_file, restore_folder
-from ..telegram.fast_transfer import MAX_CONNECTIONS, stream_document
+from ..telegram.fast_transfer import stream_document
 from ..telegram.flood import FloodGate
-from ..telegram.manager import manager
+from ..telegram.manager import account_budget, manager
 from ..telegram.throttle import installation_limiter
 
 router = APIRouter(prefix="/api/explorer", tags=["explorer"])
@@ -484,8 +484,7 @@ async def download_file(
         raise HTTPException(status.HTTP_409_CONFLICT, "No parts recorded for this file")
 
     account = await session.get(TelegramAccount, job.account_id)
-    concurrency = max(1, account.max_concurrent_jobs if account else 2)
-    max_connections = max(1, MAX_CONNECTIONS // concurrency)
+    concurrency, max_connections = account_budget(account)
     peer = manager.input_peer(channel)
     client = await _connected_client(job.account_id)
 

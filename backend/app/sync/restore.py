@@ -36,9 +36,9 @@ from ..models import (
     SyncJob,
     TelegramAccount,
 )
-from ..telegram.fast_transfer import MAX_CONNECTIONS, download_document, stream_document
+from ..telegram.fast_transfer import download_document, stream_document
 from ..telegram.flood import FloodGate
-from ..telegram.manager import manager
+from ..telegram.manager import account_budget, manager
 from ..telegram.throttle import installation_limiter
 from .destination import DestinationError, LocalDestination, RcloneDestination
 from .progress import RestoreProgress, hub
@@ -104,13 +104,11 @@ async def _parts_of(session, file_id: int) -> list[tuple[int, int, int, int]]:
 async def _budget(session, account_id: int) -> tuple[int, int]:
     """How many jobs may transfer at once on this account, and the connections each gets.
 
-    A restore spends from the same ceiling of 20 connections per data center as the jobs
-    do, and it goes through the same semaphore. Asking for the whole budget while a job
-    is uploading is what gets both blocked by Telegram.
+    A restore spends from the same budget of the account as the jobs do, and it goes
+    through the same semaphore. Asking for the whole budget while a job is uploading is
+    what gets both blocked by Telegram.
     """
-    account = await session.get(TelegramAccount, account_id)
-    concurrency = max(1, account.max_concurrent_jobs if account else 2)
-    return concurrency, max(1, MAX_CONNECTIONS // concurrency)
+    return account_budget(await session.get(TelegramAccount, account_id))
 
 
 async def _start(

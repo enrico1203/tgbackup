@@ -119,10 +119,17 @@ nothing else, and `main.py` applies it before any client exists. A body that is 
 gzipped is always accepted: compressing is an option the client may take, never an
 obligation.
 
-**Connection budget**: the 20 connections are per data center, not per job. `max_concurrent_jobs` on
-the account divides the budget: with 2 concurrent jobs each gets 10. Raising it does not increase
-total bandwidth, it spreads the same bandwidth across more jobs. `manager.transfer_lock` is shared
-between uploads and downloads: the ceiling does not care which direction the bytes go.
+**Connection budget** (`manager.account_budget`, `max_connections` on the account, revision `0011`):
+the 20 connections are per data center, not per job, and 20 is the ceiling and not the setting. What
+an account opens is a column of its own, 1 to 20, 15 by default here and on every account that
+predates the column, because the limit Telegram applies is counted per account: one that keeps being
+held back is worth running on fewer connections for good, while another on the same host has no
+reason to be. `max_concurrent_jobs` divides that budget rather than the ceiling: 15 connections and 2
+concurrent jobs is 7 each. Raising the concurrency does not increase total bandwidth, it spreads the
+same bandwidth across more jobs. Everything that transfers goes through the one function, sync jobs,
+download jobs, restores and browser downloads, so there is a single place where the number is decided
+and `FloodGate.allowance` lowers it from there while a run is being cut. `manager.transfer_lock` is
+shared between uploads and downloads: the budget does not care which direction the bytes go.
 
 **Sources**: `sync/source.py` hides local folders and rclone remotes behind the same interface
 (`list_files`, `reader`). The uploader does not know where the bytes come from.

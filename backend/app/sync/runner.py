@@ -30,9 +30,9 @@ from ..models import (
     TelegramAccount,
     utcnow,
 )
-from ..telegram.fast_transfer import MAX_CONNECTIONS, call_with_timeout, upload_slice
+from ..telegram.fast_transfer import call_with_timeout, upload_slice
 from ..telegram.flood import FloodGate
-from ..telegram.manager import manager
+from ..telegram.manager import account_budget, manager
 from ..telegram.throttle import limiter_for
 from . import window
 from .progress import hub
@@ -188,10 +188,9 @@ class JobRunner:
             )
 
             account = await session.get(TelegramAccount, job.account_id)
-            concurrency = max(1, account.max_concurrent_jobs if account else 2)
-            # The ceiling of 20 connections is per data center, not per job: it has to be
-            # divided among the jobs allowed to upload together, or Telegram blocks them.
-            max_connections = max(1, MAX_CONNECTIONS // concurrency)
+            # The connection budget is per account, not per job: it has to be divided
+            # among the jobs allowed to upload together, or Telegram blocks them.
+            concurrency, max_connections = account_budget(account)
 
         progress = hub.start_job(self.job_id, job_name)
         progress.phase = "scan"

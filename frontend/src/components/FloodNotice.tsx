@@ -75,8 +75,8 @@ export default function FloodNotice({
         {ago !== null && ago !== undefined ? `, the last one ${formatDuration(ago)} ago` : ""}.
         Each interruption costs one part sent again, nothing is lost.
         {connections
-          ? ` The transfer answered by opening ${connections} connections instead of 20,
-             and takes one back for every five clean minutes.`
+          ? ` The transfer answered by opening ${connections} connections instead of the budget
+             of the account, and takes one back for every five clean minutes.`
           : ""}
       </span>
     </div>

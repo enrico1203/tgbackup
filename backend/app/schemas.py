@@ -69,6 +69,7 @@ class AccountOut(Model):
     is_premium: bool
     default_part_size: int
     max_concurrent_jobs: int
+    max_connections: int
     status: str
     last_error: str | None
     created_at: datetime
@@ -81,6 +82,9 @@ class AccountUpdate(BaseModel):
     # The ceiling is 20 because that is the number of connections per data center: with
     # more jobs than that each would be left with less than one connection.
     max_concurrent_jobs: int | None = Field(default=None, ge=1, le=20)
+    # How many connections this account opens on a data center. Twenty is what Telegram
+    # allows before it blocks them all, one is a transfer without parallelism.
+    max_connections: int | None = Field(default=None, ge=1, le=20)
     default_part_size: int | None = Field(default=None, gt=0)
 
 

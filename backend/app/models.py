@@ -36,6 +36,15 @@ GUARD_MIN_ENTRIES = 10
 # what somebody comes looking for, so it stays readable until the retention purges it.
 READABLE_STATES = ("uploaded", "trashed")
 
+# How many connections an account opens on a data center, out of the protocol ceiling of
+# 20. It is a property of the account and not of the installation because the limit
+# Telegram applies is per account: one that keeps being held back is worth running on
+# fewer connections for good, while another on the same host has no reason to. Fifteen and
+# not twenty by default, here and on every account that predates the column, because the
+# ceiling is where an account gets cut and the last few connections buy the least.
+# See telegram/manager.py, account_budget.
+DEFAULT_MAX_CONNECTIONS = 15
+
 # An entry rebuilt by reading the channel has no date: the caption of a message carries the
 # name, the folder and the part number, never the modification time. This value marks that
 # absence, and the first scan of the job adopts the date of the source instead of taking
@@ -74,10 +83,15 @@ class TelegramAccount(Base):
     is_premium: Mapped[bool] = mapped_column(Boolean, default=False)
     default_part_size: Mapped[int] = mapped_column(BigInteger, default=1_900_000_000)
 
-    # How many jobs may upload at the same time on this account. The ceiling of 20
-    # connections per data center is divided among them, so raising this number does
-    # not increase total bandwidth: it spreads the same bandwidth across more jobs.
+    # How many jobs may upload at the same time on this account. The connection budget of
+    # the account is divided among them, so raising this number does not increase total
+    # bandwidth: it spreads the same bandwidth across more jobs.
     max_concurrent_jobs: Mapped[int] = mapped_column(Integer, default=2)
+
+    # The budget itself, 1 to 20. Everything that transfers on this account divides this
+    # number rather than the protocol ceiling, and the flood gate lowers it further while
+    # Telegram is cutting the run.
+    max_connections: Mapped[int] = mapped_column(Integer, default=DEFAULT_MAX_CONNECTIONS)
 
     # pending_code, pending_password, connected, disconnected, error
     status: Mapped[str] = mapped_column(String(32), default="pending_code")

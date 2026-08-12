@@ -21,6 +21,7 @@ export interface Account {
   is_premium: boolean;
   default_part_size: number;
   max_concurrent_jobs: number;
+  max_connections: number;
   status: string;
   last_error: string | null;
   created_at: string;

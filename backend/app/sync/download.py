@@ -31,9 +31,9 @@ from telethon.errors import FloodWaitError
 from .. import notify
 from ..db import SessionLocal
 from ..models import Channel, DownloadJob, DownloadRun, FileEntry, SyncJob, TelegramAccount, utcnow
-from ..telegram.fast_transfer import MAX_CONNECTIONS, download_document, stream_document
+from ..telegram.fast_transfer import download_document, stream_document
 from ..telegram.flood import FloodGate
-from ..telegram.manager import manager
+from ..telegram.manager import account_budget, manager
 from ..telegram.throttle import limiter_for
 from . import window
 from .destination import build_destination
@@ -155,10 +155,9 @@ class DownloadRunner:
             )
 
             account = await session.get(TelegramAccount, job.account_id)
-            concurrency = max(1, account.max_concurrent_jobs if account else 2)
-            # The ceiling of 20 connections is per data center and is shared with the
-            # uploads: divided among the jobs allowed to transfer at the same time.
-            max_connections = max(1, MAX_CONNECTIONS // concurrency)
+            # The connection budget of the account is shared with the uploads: divided
+            # among the jobs allowed to transfer at the same time.
+            concurrency, max_connections = account_budget(account)
 
         progress = hub.start_download(self.job_id, job_name)
         progress.phase = "index"

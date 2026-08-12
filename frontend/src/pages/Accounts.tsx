@@ -249,7 +249,11 @@ function ChannelList({ accountId }: { accountId: number }) {
   );
 }
 
+// The protocol ceiling, and what a new account gets: the last connections before the
+// ceiling are where Telegram starts cutting, and they buy the least. Kept in step with
+// models.DEFAULT_MAX_CONNECTIONS on the backend, which is what actually decides.
 const MAX_DC_CONNECTIONS = 20;
+const DEFAULT_CONNECTIONS = 15;
 
 function AccountSettingsModal({
   account,
@@ -261,12 +265,14 @@ function AccountSettingsModal({
   const queryClient = useQueryClient();
   const [label, setLabel] = useState(account.label);
   const [concurrency, setConcurrency] = useState(String(account.max_concurrent_jobs));
+  const [connections, setConnections] = useState(String(account.max_connections));
 
   const save = useMutation({
     mutationFn: () =>
       api.patch<Account>(`/api/accounts/${account.id}`, {
         label: label.trim(),
         max_concurrent_jobs: Number(concurrency),
+        max_connections: Number(connections),
       }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["accounts"] });
@@ -274,8 +280,11 @@ function AccountSettingsModal({
     },
   });
 
-  const jobs = Math.max(1, Number(concurrency) || 1);
-  const perJob = Math.max(1, Math.floor(MAX_DC_CONNECTIONS / jobs));
+  const jobs = Number(concurrency) || 0;
+  const budget = Number(connections) || 0;
+  const valid =
+    jobs >= 1 && jobs <= MAX_DC_CONNECTIONS && budget >= 1 && budget <= MAX_DC_CONNECTIONS;
+  const perJob = Math.max(1, Math.floor(Math.max(1, budget) / Math.max(1, jobs)));
 
   return (
     <Modal
@@ -289,7 +298,7 @@ function AccountSettingsModal({
           <button
             type="button"
             className="btn"
-            disabled={!label.trim() || jobs < 1 || save.isPending}
+            disabled={!label.trim() || !valid || save.isPending}
             onClick={() => save.mutate()}
           >
             {save.isPending ? <Spinner /> : null}
@@ -315,10 +324,25 @@ function AccountSettingsModal({
         />
       </Field>
 
+      <Field
+        label="Connections to Telegram"
+        hint={`From 1 to ${MAX_DC_CONNECTIONS}, ${DEFAULT_CONNECTIONS} by default. This is the budget of the
+               account, not of one job: everything transferring on it divides this number.`}
+      >
+        <input
+          value={connections}
+          inputMode="numeric"
+          onChange={(e) => setConnections(e.target.value.replace(/\D/g, ""))}
+        />
+      </Field>
+
       <Alert tone="info">
-        Telegram accepts at most {MAX_DC_CONNECTIONS} connections per data center, so the budget
-        is divided: with {jobs} jobs together each uses {perJob}. Raising this number does not
-        increase total bandwidth, it spreads it across more jobs.
+        Telegram blocks them all beyond {MAX_DC_CONNECTIONS} connections per data center, which is
+        why {MAX_DC_CONNECTIONS} is the ceiling here. This account opens {Math.max(1, budget)}, and
+        with {Math.max(1, jobs)} jobs together each gets {perJob}. Raising the number of jobs does
+        not increase total bandwidth, it spreads the same bandwidth across more jobs; lowering the
+        connections is what an account that Telegram keeps holding back answers with, and a run
+        already going lowers them further on its own while it is being cut.
       </Alert>
     </Modal>
   );
@@ -372,6 +396,7 @@ export default function Accounts() {
                   <th>Status</th>
                   <th>Max part</th>
                   <th className="right">Jobs together</th>
+                  <th className="right">Connections</th>
                   <th className="right">Channels</th>
                   <th>Linked on</th>
                   <th className="right">Actions</th>
@@ -407,6 +432,7 @@ export default function Accounts() {
                       </span>
                     </td>
                     <td className="right num">{account.max_concurrent_jobs}</td>
+                    <td className="right num">{account.max_connections}</td>
                     <td className="right num">{account.channels_count}</td>
                     <td style={{ whiteSpace: "nowrap" }}>{formatDateTime(account.created_at)}</td>
                     <td className="right">

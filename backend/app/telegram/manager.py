@@ -29,8 +29,9 @@ from telethon.tl.types import InputPeerChannel, InputPeerChat
 
 from ..config import settings
 from ..db import SessionLocal
-from ..models import TelegramAccount
+from ..models import DEFAULT_MAX_CONNECTIONS, TelegramAccount
 from ..security import decrypt, encrypt
+from .fast_transfer import MAX_CONNECTIONS
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +41,25 @@ PENDING_TTL_SECONDS = 15 * 60
 
 class TelegramError(Exception):
     """Error meant to be shown directly to the user."""
+
+
+def account_budget(account: TelegramAccount | None) -> tuple[int, int]:
+    """How many jobs may transfer at once on this account, and the connections each gets.
+
+    Everything that moves bytes on an account passes through here: sync jobs, download
+    jobs, restores and browser downloads. The budget is the number set on the account and
+    never more than the 20 the protocol allows per data center, divided among the jobs
+    allowed to transfer together, because the limit is counted by Telegram per account and
+    not per job. The floor is one connection, which is a transfer without parallelism but
+    still a transfer.
+
+    A missing account is a caller that could not read the row and is not a reason to
+    refuse the transfer: it gets the same defaults a new account would have.
+    """
+    concurrency = max(1, account.max_concurrent_jobs if account else 2)
+    ceiling = account.max_connections if account else DEFAULT_MAX_CONNECTIONS
+    ceiling = max(1, min(MAX_CONNECTIONS, ceiling))
+    return concurrency, max(1, ceiling // concurrency)
 
 
 @dataclass
@@ -54,8 +74,8 @@ class TelegramManager:
     def __init__(self) -> None:
         self._clients: dict[int, TelegramClient] = {}
         self._pending: dict[int, _Pending] = {}
-        # Several jobs on the same account would fight over the ceiling of 20
-        # connections per data center: the transfer phases are serialized.
+        # Several jobs on the same account would fight over its connection budget:
+        # the transfer phases are serialized.
         self._transfer_locks: dict[int, asyncio.Semaphore] = {}
         self._transfer_limits: dict[int, int] = {}
         # The event loop holds only a weak reference to a running task. Without a strong
@@ -149,8 +169,8 @@ class TelegramManager:
     def transfer_lock(self, account_id: int, limit: int = 2) -> asyncio.Semaphore:
         """Semaphore limiting how many jobs transfer at the same time on this account.
 
-        Uploads and downloads share it: the ceiling of 20 connections is per data center
-        and does not care in which direction the bytes are going.
+        Uploads and downloads share it: the connection budget is counted per account and
+        does not care in which direction the bytes are going.
 
         When the limit changes a new semaphore is created: jobs already uploading will
         release the old one, so for the duration of a run the effective concurrency can

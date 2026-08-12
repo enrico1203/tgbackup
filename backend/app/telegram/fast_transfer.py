@@ -51,6 +51,9 @@ from .throttle import ChainedLimiter
 
 log = logging.getLogger(__name__)
 
+# The protocol ceiling: beyond 20 connections per data center Telegram blocks them all.
+# It is not what a transfer opens, it is what an account may never be configured above.
+# See models.TelegramAccount.max_connections and manager.account_budget.
 MAX_CONNECTIONS = 20
 UPLOAD_PART_SIZE = 512 * 1024
 DOWNLOAD_PART_SIZE = 1024 * 1024
@@ -468,8 +471,8 @@ async def upload_slice(
 
     file_id = helpers.generate_random_long()
     is_big = length > BIG_FILE_THRESHOLD
-    # The ceiling comes from the caller: when several jobs upload on the same account,
-    # the budget of 20 connections per data center has already been divided among them.
+    # The ceiling comes from the caller: the budget set on the account has already been
+    # divided among the jobs allowed to upload on it at the same time.
     # The ceiling of the caller, lowered by the gate for as long as Telegram keeps cutting
     # this run: twenty connections against an account being held back are twenty ways of
     # being refused at once. See flood.FloodGate.allowance.
