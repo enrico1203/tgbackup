@@ -17,6 +17,13 @@ services:
       APP_SECRET: ${APP_SECRET}
       TZ: ${TZ:-Europe/Rome}
       DATA_DIR: /data
+      # How long a 512KB part may go unanswered before its connection is rebuilt and the
+      # part sent again. The default in config.py is 120s, which is the safe value for a
+      # line nobody has measured; here a part comes back in about a second at 9 MB/s, so
+      # forty five is still forty five times the margin and it cuts the cost of one of
+      # these cuts from two minutes to under one. Raise it on a slow uplink: the price of
+      # a deadline that is too short is the same part sent twice.
+      TELEGRAM_PART_TIMEOUT: ${TELEGRAM_PART_TIMEOUT:-45}
     volumes:
       # SQLite database, rclone configuration and files rebuilt by restore
       - ./data:/data
