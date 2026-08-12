@@ -77,6 +77,8 @@ for changing the code.
   folders and anything too large stay out.
 - **Check and rebuild**: the index can be verified against the channel, and rebuilt from it when the
   database is gone.
+- **Says when Telegram is limiting you**: the job is marked in yellow while the account is being held
+  back, and the transfer answers by opening fewer connections until it settles.
 - **Notifications**: a report at the end of a run, in the Saved Messages of a Telegram account.
 - **Export and import**: the index of a channel travels to another machine in one file, so that
   machine can restore everything the channel holds.
@@ -241,6 +243,30 @@ constraint on when your line is busy, and it is safe because every part is recor
 
 The hours are read in the timezone set in Settings, which also decides how the window follows the
 change of season. Everything else, run times included, is kept in UTC.
+
+## When Telegram limits the account
+
+An account that has uploaded a great deal starts being held back, and Telegram says so in two very
+different ways. Sometimes it asks for a wait, in seconds, which is polite and easy to read. Sometimes
+it simply stops answering: the connections stay up, no error arrives, and the parts in flight are
+never acknowledged. That second one used to be invisible from the interface — a job going at a
+quarter of its speed looked exactly like a job going slowly.
+
+Now the job says it. While it is happening the job is marked **Telegram limiting** in yellow, on its
+own card and on the dashboard, with a line saying how many times this run has been interrupted and
+how long ago the last one was. Yellow and not red on purpose: the transfer is working, the bytes are
+moving, it is being held back. Red stays for a transfer stopped dead waiting out a wait.
+
+Two things happen underneath, without asking. A part that goes unanswered has its connection rebuilt
+and is sent again, so an interruption costs one part rather than the whole file. And the number of
+connections comes down: a quarter of them at every interruption, down to a floor of two, with one
+given back for every five clean minutes. Twenty connections against an account being held back are
+twenty ways of being refused at once, and whether fewer of them help is not something a client can
+know in advance — so the run tries, and keeps what works. Nothing is lost either way, since the
+transfer continues at every count.
+
+Once the run is over the count stays in its history, next to the outcome, and goes into the report if
+notifications are on. It is the answer to why last night took four hours, asked the morning after.
 
 ## Notifications
 

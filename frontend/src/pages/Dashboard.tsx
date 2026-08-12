@@ -7,7 +7,7 @@ import { formatBytes, formatDateTime, formatSpeed, percent } from "../lib/format
 import { useProgress } from "../lib/progress";
 import type { Dashboard as DashboardData } from "../lib/types";
 import DownloadActivity, { downloadPhaseLabel } from "../components/DownloadActivity";
-import { isHeld } from "../components/FloodNotice";
+import { isHeld, isLimited } from "../components/FloodNotice";
 import JobActivity, { phaseLabel } from "../components/JobActivity";
 import UpdateBanner from "../components/UpdateBanner";
 import { Card, CardHead, Empty, Pill, Sparkline, Stat } from "../components/ui";
@@ -82,15 +82,21 @@ export default function Dashboard() {
                     tone={
                       isHeld(job)
                         ? "bad"
-                        : job.phase === "upload"
-                          ? "ok"
-                          : job.phase === "waiting"
-                            ? "mute"
-                            : "warn"
+                        : isLimited(job)
+                          ? "warn"
+                          : job.phase === "upload"
+                            ? "ok"
+                            : job.phase === "waiting"
+                              ? "mute"
+                              : "warn"
                     }
                     live={job.phase !== "waiting"}
                   >
-                    {isHeld(job) ? "Flood wait" : phaseLabel(job.phase)}
+                    {isHeld(job)
+                      ? "Flood wait"
+                      : isLimited(job)
+                        ? "Telegram limiting"
+                        : phaseLabel(job.phase)}
                   </Pill>
                 </div>
 
@@ -113,15 +119,21 @@ export default function Dashboard() {
                     tone={
                       isHeld(job)
                         ? "bad"
-                        : job.phase === "download"
-                          ? "ok"
-                          : job.phase === "waiting"
-                            ? "mute"
-                            : "warn"
+                        : isLimited(job)
+                          ? "warn"
+                          : job.phase === "download"
+                            ? "ok"
+                            : job.phase === "waiting"
+                              ? "mute"
+                              : "warn"
                     }
                     live={job.phase !== "waiting"}
                   >
-                    {isHeld(job) ? "Flood wait" : downloadPhaseLabel(job.phase)}
+                    {isHeld(job)
+                      ? "Flood wait"
+                      : isLimited(job)
+                        ? "Telegram limiting"
+                        : downloadPhaseLabel(job.phase)}
                   </Pill>
                 </div>
 

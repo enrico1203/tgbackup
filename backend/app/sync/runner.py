@@ -274,6 +274,16 @@ class JobRunner:
                     await session.commit()
             raise
         finally:
+            # Whatever ended the run, what Telegram did to it while it lasted is worth
+            # keeping: once it is over, a run that was cut every three minutes and one
+            # that flew look exactly the same, and this is the answer to why last night
+            # took four hours. Written here so all three endings carry it.
+            if flood.events:
+                async with SessionLocal() as session:
+                    run = await session.get(JobRun, run_id)
+                    if run is not None:
+                        run.limited_events = flood.events
+                        await session.commit()
             hub.end_job(self.job_id)
 
     async def _set_phase(self, phase: str) -> None:
@@ -842,6 +852,12 @@ async def _report(job_id: int, status: str, error: str | None) -> None:
             f"Run started {run.started_at:%Y-%m-%d %H:%M} UTC, lasted "
             f"{notify.format_duration(run.started_at, run.finished_at or utcnow())}"
         )
+        if run.limited_events:
+            # Said out loud in the report, because a run that took four hours because
+            # Telegram was holding the account back reads as a slow run and nothing else.
+            lines.append(
+                f"Telegram held the account back {run.limited_events} times during this run"
+            )
     if failed_files:
         lines.append(f"Files in error: {failed_files}")
     if error:

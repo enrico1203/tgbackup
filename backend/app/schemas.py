@@ -239,6 +239,9 @@ class JobRunOut(Model):
     revived: int
     uploaded_files: int
     uploaded_bytes: int
+    # How many times Telegram held this run back. Zero on every run written before the
+    # column existed, which reads as "nothing to report" and is the right answer.
+    limited_events: int = 0
     error: str | None
 
 
@@ -332,6 +335,7 @@ class DownloadRunOut(Model):
     downloaded_files: int
     downloaded_bytes: int
     failed_files: int
+    limited_events: int = 0
     error: str | None
 
 

@@ -46,9 +46,37 @@ RESET_SECONDS = 300.0
 # every wake-up, and a cancelled job must not wait out an hour before noticing.
 MAX_SLEEP = 1.0
 
+# Twenty connections meet the same cut within milliseconds of each other, so twenty
+# reports are one event. Counted otherwise, "held back 3 times" would read as 60 and mean
+# nothing to anybody.
+CUT_COALESCE_SECONDS = 10.0
+
+# What it takes to say an account is being held back, and how long that stays true after
+# the last sign of it. One lost part in an hour is a lost part; a second one is a pattern,
+# and the pattern is what the interface has to name. Fifteen minutes of quiet and the job
+# stops being marked, because the state it describes is the present one.
+LIMIT_MIN_EVENTS = 2
+LIMIT_MEMORY_SECONDS = 900.0
+
+# The connection budget under a limit. Twenty is the protocol ceiling and the right number
+# when nothing is in the way; against an account being held back it is also twenty ways of
+# asking for the same refusal at once. Each cut takes a quarter of them away, five clean
+# minutes give one back, and the floor is two, because one connection is not a parallel
+# transfer at all. Whether fewer connections make Telegram friendlier is not something a
+# client can know: what the run does is try, and keep what works. Nothing is lost if the
+# answer is no, since the bytes keep moving at every count.
+CONNECTION_FLOOR = 2
+GROW_AFTER_SECONDS = 300.0
+
 
 class FloodGate:
-    """The wait every connection of one run observes together."""
+    """The wait every connection of one run observes together.
+
+    It is also the only thing that sees the whole shape of what Telegram is doing to a
+    run: the waits it announces and the parts it silently stops answering both pass
+    through here, so this is where the count belongs that lets a job say it is being held
+    back rather than being slow.
+    """
 
     def __init__(self, label: str = "", cancel=None) -> None:
         self._label = label
@@ -56,7 +84,67 @@ class FloodGate:
         self._until = 0.0
         self._total = 0.0
         self._level = 0
+        self._last_event = 0.0
+        self._last_cut = 0.0
+        self._allowed: int | None = None
+        self._last_grow = 0.0
         self.waits = 0
+        self.cuts = 0
+
+    @property
+    def events(self) -> int:
+        """Everything Telegram did to this run to slow it down, said out loud or not."""
+        return self.waits + self.cuts
+
+    def limited(self) -> bool:
+        """Whether the account is being held back right now, as far as this run can tell."""
+        if self.events < LIMIT_MIN_EVENTS:
+            return False
+        return (time.monotonic() - self._last_event) < LIMIT_MEMORY_SECONDS
+
+    def cut(self) -> None:
+        """One part taken and never answered, or a connection that broke carrying it."""
+        now = time.monotonic()
+        self._last_event = now
+        if now - self._last_cut <= CUT_COALESCE_SECONDS:
+            return
+        self.cuts += 1
+        self._last_cut = now
+        if self._allowed is not None and self._allowed > CONNECTION_FLOOR:
+            self._allowed = max(CONNECTION_FLOOR, self._allowed - max(1, self._allowed // 4))
+            self._last_grow = now
+            log.warning(
+                "%s cut again: the next slice opens %d connections instead of the ceiling",
+                self._label or "The transfer", self._allowed,
+            )
+
+    def allowance(self, ceiling: int) -> int:
+        """How many connections a slice starting now may open, out of `ceiling`.
+
+        Read when a slice starts and not while one runs: the senders of a slice already
+        going are built and dividing its parts between them, and taking one away in the
+        middle would mean rewriting the round robin under it for no gain. Cuts come every
+        few minutes and slices last minutes, so the next one is soon enough.
+
+        Growing back is one connection per clean stretch, shrinking is a quarter at a
+        time: it takes an hour of quiet to walk back up from the floor, which is the right
+        asymmetry when the cost of being wrong upwards is another cut.
+        """
+        now = time.monotonic()
+        if self._allowed is None:
+            self._allowed = ceiling
+            self._last_grow = now
+        elif self._allowed < ceiling:
+            quiet = now - max(self._last_event, self._last_grow)
+            steps = int(quiet // GROW_AFTER_SECONDS)
+            if steps > 0:
+                self._allowed = min(ceiling, self._allowed + steps)
+                self._last_grow = now
+                log.info(
+                    "%s has been clean for %.0f minutes: back to %d connections",
+                    self._label or "The transfer", quiet / 60, self._allowed,
+                )
+        return max(1, min(ceiling, self._allowed))
 
     def remaining(self) -> float:
         return max(0.0, self._until - time.monotonic())
@@ -97,6 +185,7 @@ class FloodGate:
         it, since the server has just been more specific than the ladder was.
         """
         now = time.monotonic()
+        self._last_event = now
         if now >= self._until:
             step = float(BACKOFF[min(self._level, len(BACKOFF) - 1)])
             self._level += 1
@@ -122,15 +211,37 @@ class FloodGate:
 
     def snapshot(self) -> dict:
         left = self.remaining()
+        limited = self.limited()
         return {
             "flood_wait_seconds": round(left, 1) if left > 0 else None,
             "flood_wait_total": round(self._total, 1) if left > 0 else None,
             "flood_waits": self.waits,
+            # Held right now is one thing and being held back is another: a transfer that
+            # is cut every few minutes moves bytes in between, so it never looks stopped
+            # and the interface had nothing to say about it. These three are what lets it
+            # say the account is limited while the bar is still moving.
+            "limited": limited,
+            "limited_events": self.events,
+            "limited_ago": (
+                round(time.monotonic() - self._last_event) if limited else None
+            ),
+            # What the limit is costing in connections, so the interface can say what was
+            # done about it and not only that something happened.
+            "connections_allowed": self._allowed,
         }
 
 
+EMPTY_SNAPSHOT = {
+    "flood_wait_seconds": None,
+    "flood_wait_total": None,
+    "flood_waits": 0,
+    "limited": False,
+    "limited_events": 0,
+    "limited_ago": None,
+    "connections_allowed": None,
+}
+
+
 def snapshot_of(gate: FloodGate | None) -> dict:
-    """The three fields a progress frame carries, for a transfer with or without a gate."""
-    if gate is None:
-        return {"flood_wait_seconds": None, "flood_wait_total": None, "flood_waits": 0}
-    return gate.snapshot()
+    """The fields a progress frame carries, for a transfer with or without a gate."""
+    return dict(EMPTY_SNAPSHOT) if gate is None else gate.snapshot()

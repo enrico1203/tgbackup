@@ -98,7 +98,14 @@ export default function DownloadActivity({ progress }: { progress: DownloadProgr
           ? ` (part ${progress.current_part} of ${progress.current_parts})`
           : ""}
       </div>
-      <FloodNotice seconds={progress.flood_wait_seconds} waits={progress.flood_waits} />
+      <FloodNotice
+        seconds={progress.flood_wait_seconds}
+        waits={progress.flood_waits}
+        limited={progress.limited}
+        events={progress.limited_events}
+        ago={progress.limited_ago}
+        connections={progress.connections_allowed}
+      />
       <ProgressBar
         done={progress.bytes_done}
         total={progress.bytes_total}

@@ -103,9 +103,15 @@ export function Sparkline({ values }: { values: number[] }) {
   );
 }
 
-export function Alert({ children, tone = "error" }: { children: ReactNode; tone?: "error" | "info" }) {
+export function Alert({
+  children,
+  tone = "error",
+}: {
+  children: ReactNode;
+  tone?: "error" | "info" | "warn";
+}) {
   return (
-    <div className={tone === "info" ? "alert info" : "alert"}>
+    <div className={tone === "error" ? "alert" : `alert ${tone}`}>
       <AlertCircle size={16} style={{ flexShrink: 0, marginTop: 1 }} />
       <span>{children}</span>
     </div>

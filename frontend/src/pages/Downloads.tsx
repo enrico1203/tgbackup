@@ -21,7 +21,7 @@ import ScheduleGrid, { ALWAYS, describeSchedule } from "../components/ScheduleGr
 
 const MEGA = 1_000_000;
 import DownloadActivity, { downloadPhaseLabel } from "../components/DownloadActivity";
-import { isHeld } from "../components/FloodNotice";
+import { isHeld, isLimited } from "../components/FloodNotice";
 import RemoteBrowser from "../components/RemoteBrowser";
 import type { Account, Channel, DownloadJob, RcloneStatus } from "../lib/types";
 import {
@@ -403,6 +403,11 @@ function DownloadCard({
           {running && isHeld(progress) ? (
             <Pill tone="bad" live>
               Flood wait
+            </Pill>
+          ) : running && isLimited(progress) ? (
+            // Yellow and not red: the job is working, it is being held back.
+            <Pill tone="warn" live>
+              Telegram limiting
             </Pill>
           ) : running ? (
             <Pill

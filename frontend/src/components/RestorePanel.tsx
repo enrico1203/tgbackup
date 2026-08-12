@@ -61,7 +61,14 @@ export default function RestorePanel() {
                 {restore.target_path}
               </div>
 
-              <FloodNotice seconds={restore.flood_wait_seconds} waits={restore.flood_waits} />
+              <FloodNotice
+                seconds={restore.flood_wait_seconds}
+                waits={restore.flood_waits}
+                limited={restore.limited}
+                events={restore.limited_events}
+                ago={restore.limited_ago}
+                connections={restore.connections_allowed}
+              />
 
               <ProgressBar
                 done={restore.bytes_done}

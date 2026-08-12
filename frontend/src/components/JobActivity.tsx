@@ -94,6 +94,10 @@ export default function JobActivity({ progress }: { progress: JobProgress }) {
       <FloodNotice
         seconds={progress.flood_wait_seconds}
         waits={progress.flood_waits}
+        limited={progress.limited}
+        events={progress.limited_events}
+        ago={progress.limited_ago}
+        connections={progress.connections_allowed}
       />
       <ProgressBar
         done={progress.bytes_done}

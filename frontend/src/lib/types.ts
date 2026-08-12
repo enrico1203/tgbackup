@@ -116,6 +116,8 @@ export interface JobRun {
   revived: number;
   uploaded_files: number;
   uploaded_bytes: number;
+  /** How many times Telegram held this run back. 0 on runs older than the column. */
+  limited_events: number;
   error: string | null;
 }
 
@@ -171,6 +173,7 @@ export interface DownloadRun {
   downloaded_files: number;
   downloaded_bytes: number;
   failed_files: number;
+  limited_events: number;
   error: string | null;
 }
 
@@ -398,6 +401,14 @@ export interface JobProgress {
   flood_wait_seconds?: number | null;
   flood_wait_total?: number | null;
   flood_waits?: number;
+  /** Whether Telegram is holding this account back: waits it announced and parts it
+   * stopped answering, counted together. True while the bytes are still moving, which is
+   * exactly the state nothing else could describe. `connections_allowed` is what the
+   * transfer did about it, down from the twenty it would otherwise open. */
+  limited?: boolean;
+  limited_events?: number;
+  limited_ago?: number | null;
+  connections_allowed?: number | null;
 }
 
 export interface DownloadProgress {
@@ -426,6 +437,14 @@ export interface DownloadProgress {
   flood_wait_seconds?: number | null;
   flood_wait_total?: number | null;
   flood_waits?: number;
+  /** Whether Telegram is holding this account back: waits it announced and parts it
+   * stopped answering, counted together. True while the bytes are still moving, which is
+   * exactly the state nothing else could describe. `connections_allowed` is what the
+   * transfer did about it, down from the twenty it would otherwise open. */
+  limited?: boolean;
+  limited_events?: number;
+  limited_ago?: number | null;
+  connections_allowed?: number | null;
 }
 
 export interface RestoreProgress {
@@ -448,6 +467,14 @@ export interface RestoreProgress {
   flood_wait_seconds?: number | null;
   flood_wait_total?: number | null;
   flood_waits?: number;
+  /** Whether Telegram is holding this account back: waits it announced and parts it
+   * stopped answering, counted together. True while the bytes are still moving, which is
+   * exactly the state nothing else could describe. `connections_allowed` is what the
+   * transfer did about it, down from the twenty it would otherwise open. */
+  limited?: boolean;
+  limited_events?: number;
+  limited_ago?: number | null;
+  connections_allowed?: number | null;
 }
 
 export interface ProgressFrame {

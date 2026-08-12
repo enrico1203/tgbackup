@@ -262,6 +262,11 @@ class DownloadRun(Base):
     downloaded_files: Mapped[int] = mapped_column(Integer, default=0)
     downloaded_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     failed_files: Mapped[int] = mapped_column(Integer, default=0)
+    # How many times Telegram held this run back, waits it announced and parts it simply
+    # stopped answering counted together. Kept on the run and not only in the live progress
+    # because the question it answers is asked the morning after: a run that crawled and a
+    # run that flew look identical once they are over. See telegram/flood.py.
+    limited_events: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str | None] = mapped_column(Text)
 
 
@@ -343,4 +348,9 @@ class JobRun(Base):
     revived: Mapped[int] = mapped_column(Integer, default=0)
     uploaded_files: Mapped[int] = mapped_column(Integer, default=0)
     uploaded_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    # How many times Telegram held this run back, waits it announced and parts it simply
+    # stopped answering counted together. Kept on the run and not only in the live progress
+    # because the question it answers is asked the morning after: a run that crawled and a
+    # run that flew look identical once they are over. See telegram/flood.py.
+    limited_events: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str | None] = mapped_column(Text)

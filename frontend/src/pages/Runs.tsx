@@ -101,7 +101,14 @@ function SyncHistory({ jobs }: { jobs: Job[] }) {
                     <td style={{ whiteSpace: "nowrap" }}>{formatDateTime(run.started_at)}</td>
                     <td className="num">{duration(run)}</td>
                     <td>
-                      <Outcome status={run.status} />
+                      <div className="row" style={{ gap: 6 }}>
+                        <Outcome status={run.status} />
+                        {/* A run held back by Telegram succeeded and took four times as
+                            long, which nothing else in this table would ever say. */}
+                        {run.limited_events ? (
+                          <Pill tone="warn">Limited {run.limited_events}x</Pill>
+                        ) : null}
+                      </div>
                     </td>
                     <td className="right num">{run.scanned.toLocaleString("en-US")}</td>
                     <td className="right num">{run.added.toLocaleString("en-US")}</td>
@@ -183,7 +190,14 @@ function DownloadHistory({ jobs }: { jobs: DownloadJob[] }) {
                     <td style={{ whiteSpace: "nowrap" }}>{formatDateTime(run.started_at)}</td>
                     <td className="num">{duration(run)}</td>
                     <td>
-                      <Outcome status={run.status} />
+                      <div className="row" style={{ gap: 6 }}>
+                        <Outcome status={run.status} />
+                        {/* A run held back by Telegram succeeded and took four times as
+                            long, which nothing else in this table would ever say. */}
+                        {run.limited_events ? (
+                          <Pill tone="warn">Limited {run.limited_events}x</Pill>
+                        ) : null}
+                      </div>
                     </td>
                     <td className="right num">{run.indexed_files.toLocaleString("en-US")}</td>
                     <td className="right num">{run.present_files.toLocaleString("en-US")}</td>

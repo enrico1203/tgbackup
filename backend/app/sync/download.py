@@ -261,6 +261,14 @@ class DownloadRunner:
             await self._close_run(run_id, "error", str(exc)[:1000])
             raise
         finally:
+            # What Telegram did to this run, kept for the morning after exactly as a sync
+            # job keeps it. See sync/runner.py.
+            if flood.events:
+                async with SessionLocal() as session:
+                    run = await session.get(DownloadRun, run_id)
+                    if run is not None:
+                        run.limited_events = flood.events
+                        await session.commit()
             hub.end_download(self.job_id)
 
     async def _close_run(self, run_id: int, status: str, error: str | None) -> None:
@@ -510,6 +518,10 @@ async def _report(job_id: int, status: str, error: str | None) -> None:
             f"Run started {run.started_at:%Y-%m-%d %H:%M} UTC, lasted "
             f"{notify.format_duration(run.started_at, run.finished_at or utcnow())}"
         )
+        if run.limited_events:
+            lines.append(
+                f"Telegram held the account back {run.limited_events} times during this run"
+            )
     if failed_files:
         lines.append(f"Files failed: {failed_files}")
     if error:

@@ -21,7 +21,7 @@ import {
 import { api } from "../lib/api";
 import { formatBytes, formatDateTime, formatInterval } from "../lib/format";
 import { useProgress } from "../lib/progress";
-import { isHeld } from "../components/FloodNotice";
+import { isHeld, isLimited } from "../components/FloodNotice";
 import JobActivity, { phaseLabel } from "../components/JobActivity";
 import ScheduleGrid, { ALWAYS, describeSchedule } from "../components/ScheduleGrid";
 import RemoteBrowser from "../components/RemoteBrowser";
@@ -551,6 +551,12 @@ function JobCard({ job, onEdit }: { job: Job; onEdit: (job: Job) => void }) {
           {running && isHeld(progress) ? (
             <Pill tone="bad" live>
               Flood wait
+            </Pill>
+          ) : running && isLimited(progress) ? (
+            // Yellow and not red: the job is working, it is being held back. The bar and
+            // the panel say by how much, this says it at a glance from the list.
+            <Pill tone="warn" live>
+              Telegram limiting
             </Pill>
           ) : running ? (
             <Pill

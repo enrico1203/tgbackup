@@ -1345,6 +1345,14 @@ th.right {
   border-color: color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
+/* Not an error and not a note: something is wrong out there and the job is carrying on
+   in spite of it, which is what a limited account looks like. */
+.alert.warn {
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 30%, transparent);
+}
+
 /* Update banner. Louder than an alert on purpose: it is the first thing on the
    dashboard and it is the only place that will ever say a new version exists. */
 

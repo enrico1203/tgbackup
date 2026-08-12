@@ -205,6 +205,10 @@ async def send_transfer_request(
             # from its first byte anyway. Both are answered by the same thing: this
             # connection is finished, build another and send the part on it.
             silences += 1
+            if flood is not None:
+                # Counted whether or not it is answered by a wait: this is the account
+                # being held back, and it is what the job says out loud.
+                flood.cut()
             if renew is None or silences > SILENCE_RETRIES:
                 raise
             log.warning(
@@ -466,7 +470,11 @@ async def upload_slice(
     is_big = length > BIG_FILE_THRESHOLD
     # The ceiling comes from the caller: when several jobs upload on the same account,
     # the budget of 20 connections per data center has already been divided among them.
-    connections = connection_count(length, max(1, min(max_connections, MAX_CONNECTIONS)))
+    # The ceiling of the caller, lowered by the gate for as long as Telegram keeps cutting
+    # this run: twenty connections against an account being held back are twenty ways of
+    # being refused at once. See flood.FloodGate.allowance.
+    allowed = max_connections if flood is None else flood.allowance(max_connections)
+    connections = connection_count(length, max(1, min(allowed, MAX_CONNECTIONS)))
 
     transferrer = ParallelTransferrer(client)
     senders = [
@@ -583,7 +591,8 @@ async def download_document(
     fighting over the file position.
     """
     size = document.size
-    connections = connection_count(size, max(1, min(max_connections, MAX_CONNECTIONS)))
+    allowed = max_connections if flood is None else flood.allowance(max_connections)
+    connections = connection_count(size, max(1, min(allowed, MAX_CONNECTIONS)))
     senders = await _download_senders(client, document, connections, flood, cancel)
 
     written = 0
@@ -644,7 +653,8 @@ async def stream_document(
     order.
     """
     size = document.size
-    connections = connection_count(size, max(1, min(max_connections, MAX_CONNECTIONS)))
+    allowed = max_connections if flood is None else flood.allowance(max_connections)
+    connections = connection_count(size, max(1, min(allowed, MAX_CONNECTIONS)))
     senders = await _download_senders(client, document, connections, flood, cancel)
 
     window = STREAM_WINDOW_PARTS * DOWNLOAD_PART_SIZE

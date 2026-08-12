@@ -437,6 +437,29 @@ limit is. After `SILENCE_RETRIES` (3) the slice is given up, which is where the 
 Two minutes is a floor, not a guess: twenty connections that slow are moving under a hundred
 kilobytes a second between them, and below that a re-send costs more than it saves.
 
+**A limited account is said out loud, and answered by opening fewer connections**
+(`FloodGate.cut`, `allowance`, `limited_events` on the runs, revision `0010`). Held and limited are
+not the same state and the interface needs both. Held is the transfer at zero waiting out a wait, red,
+with a countdown. Limited is the account being held back while the bytes still move, yellow: parts
+taken and never answered, connections cut every few minutes, no error anywhere, which until now was
+visible only in the log and made a job at a quarter of its speed look like a slow job. The gate is
+where both arrive, so it is where the count lives: `waits` plus `cuts`, and a cut is coalesced over
+`CUT_COALESCE_SECONDS` because twenty connections meet the same cut within milliseconds and "held
+back 3 times" must not read as 60. Two events inside `LIMIT_MEMORY_SECONDS` (15 min) is what turns
+the mark on, one lost part in an hour being a lost part and not a pattern, and the mark goes out by
+itself once the run has been quiet, since it describes the present. The count is written on the run
+row in the `finally` of the run, so all three endings carry it, and it is what the history and the
+report say the morning after.
+
+The connection budget answers the same events. `allowance(ceiling)` is read when a slice starts and
+never while one runs, because the senders of a running slice are already dividing its parts between
+them: a cut takes a quarter of the connections away, five clean minutes give one back, and the floor
+is two, one connection being no parallel transfer at all. Additive up and multiplicative down, which
+is the right asymmetry when being wrong upwards costs another cut. Whether fewer connections make
+Telegram friendlier is not knowable from here: the run tries and keeps what works, and nothing is
+lost if the answer is no, since the bytes move at every count. Measured 2026-08-12 on an account with
+22.9 TB uploaded in eighteen days, cut every two to four minutes on twenty connections.
+
 **Stop is a request the transfer has to be able to hear** (`StopSignal.wait`, `call_with_timeout`).
 The signal is read between one part and the next, which is exactly what is never reached while a
 part hangs: pressing Stop on a job in that state did nothing at all, for up to ten minutes, on a job
