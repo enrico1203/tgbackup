@@ -406,6 +406,22 @@ is the last thing in `docker compose logs backend`.
 8. **Export**: moves a channel to another installation.
 9. **Maintenance**: checks a channel against the index, or rebuilds the index by reading it.
 
+## Changing the account of a job
+
+The Telegram account a job runs with can be changed after the job was created: open the job, pick
+another account and save. The channel goes with it, and so does everything already in it. Nothing is
+uploaded again and nothing is downloaded again, because what the index holds are message ids and
+those belong to the channel, not to the account that sent them.
+
+Two conditions on the new account. It has to be a member of the channel, the permission to read one
+being issued per account: the save reads that account's own channel list to find it and refuses if it
+is not there. And to remove files it has to be able to remove them, which for messages another
+account sent means being an admin with the right to delete messages. Uploading and downloading need
+only membership.
+
+An automatic check configured on that channel follows the job, as long as the job was the last one
+writing there.
+
 ## Moving a channel to another machine
 
 The files live on Telegram, the knowledge of what is up there lives in this database. Export carries

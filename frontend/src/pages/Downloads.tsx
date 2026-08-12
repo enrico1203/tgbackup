@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router";
 import {
@@ -72,6 +72,18 @@ function DownloadForm({ job, onClose }: { job: DownloadJob | null; onClose: () =
     queryFn: () => api.get<RcloneStatus>("/api/rclone"),
   });
 
+  const account = accounts?.find((item) => item.id === accountId);
+  const movingAccount = job !== null && accountId !== null && accountId !== job.account_id;
+
+  // Same as on a sync job: channel rows are per account, so after an account change the
+  // row the new account holds for the same channel is found by its Telegram id, and when
+  // that account has never listed its channels here the save resolves it on the server.
+  useEffect(() => {
+    if (!job || channelId !== null || !channels) return;
+    const same = channels.find((item) => item.tg_id === job.channel_tg_id);
+    if (same) setChannelId(same.id);
+  }, [channels, channelId, job]);
+
   const save = useMutation({
     mutationFn: async () => {
       const payload = {
@@ -89,8 +101,13 @@ function DownloadForm({ job, onClose }: { job: DownloadJob | null; onClose: () =
         enabled,
       };
       if (job) {
-        const { account_id: _ignored, ...rest } = payload;
-        return api.patch<DownloadJob>(`/api/downloads/${job.id}`, rest);
+        const { channel_id: _channel, ...withoutChannel } = payload;
+        // Left out only when the new account has no row for the channel here yet: the one
+        // on screen would be the row of the account being left.
+        return api.patch<DownloadJob>(
+          `/api/downloads/${job.id}`,
+          channelId === null ? withoutChannel : payload,
+        );
       }
       return api.post<DownloadJob>("/api/downloads", payload);
     },
@@ -103,10 +120,12 @@ function DownloadForm({ job, onClose }: { job: DownloadJob | null; onClose: () =
 
   const destinationReady =
     destType === "local" ? Boolean(localPath.trim()) : Boolean(remote.trim());
+  // A job being moved to another account may have no channel selected: it keeps the
+  // channel it already reads, and the server finds that account's row for it.
   const valid =
     Boolean(name.trim()) &&
     accountId !== null &&
-    channelId !== null &&
+    (channelId !== null || movingAccount) &&
     destinationReady &&
     Number(intervalHours) > 0;
 
@@ -149,7 +168,6 @@ function DownloadForm({ job, onClose }: { job: DownloadJob | null; onClose: () =
           <Field label="Telegram account">
             <select
               value={accountId ?? ""}
-              disabled={Boolean(job)}
               onChange={(e) => {
                 setAccountId(Number(e.target.value));
                 setChannelId(null);
@@ -183,6 +201,14 @@ function DownloadForm({ job, onClose }: { job: DownloadJob | null; onClose: () =
             </select>
           </Field>
         </div>
+
+        {movingAccount ? (
+          <Alert tone="info">
+            The job moves to {account?.label ?? "another account"} and keeps the channel
+            {job ? ` ${job.channel_title}` : ""}: only the account that talks to Telegram
+            changes, and it has to be in that channel to read it.
+          </Alert>
+        ) : null}
 
         <Field label="Destination">
           <div className="row" style={{ gap: 8 }}>

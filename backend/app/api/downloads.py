@@ -18,6 +18,7 @@ from ..schemas import (
 )
 from ..sync import window
 from ..sync.scheduler import DOWNLOAD, scheduler
+from .accounts import channel_for_account
 
 router = APIRouter(prefix="/api/downloads", tags=["downloads"])
 
@@ -196,10 +197,25 @@ async def update_download(
         )
 
     data = payload.model_dump(exclude_unset=True)
-    if {"channel_id", "local_path", "remote", "dest_type"} & data.keys():
+    if data.get("account_id") is None:
+        data.pop("account_id", None)
+    account_id = data.get("account_id", job.account_id)
+
+    if account_id != job.account_id:
+        # Same move a sync job makes: the channel stays, the row it is read through becomes
+        # the one the new account holds for it. See api/accounts.py, channel_for_account.
+        current = await session.get(Channel, job.channel_id)
+        if current is None:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, "The job points at a channel that is gone"
+            )
+        target = await channel_for_account(session, account_id, current.tg_id)
+        data.setdefault("channel_id", target.id)
+
+    if {"account_id", "channel_id", "local_path", "remote", "dest_type"} & data.keys():
         await _validate(
             session,
-            job.account_id,
+            account_id,
             data.get("channel_id", job.channel_id),
             data.get("dest_type", job.dest_type),
             data.get("local_path", job.local_path),

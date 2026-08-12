@@ -12,6 +12,7 @@ from ..rclone import client as rclone
 from ..schemas import JobIn, JobOut, JobRunOut, JobStats, JobUpdate
 from ..sync import window
 from ..sync.scheduler import SYNC, scheduler
+from .accounts import carry_channel_check, channel_for_account
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -198,18 +199,45 @@ async def update_job(
         )
 
     data = payload.model_dump(exclude_unset=True)
-    if {"channel_id", "local_path", "remote", "source_type"} & data.keys():
+    if data.get("account_id") is None:
+        data.pop("account_id", None)
+    account_id = data.get("account_id", job.account_id)
+
+    if account_id != job.account_id:
+        # The account changes, the channel does not: the job is moved onto the row the new
+        # account holds for the same Telegram channel, since the access_hash it carries is
+        # issued per user. The index is left exactly as it is, because the message ids in it
+        # belong to the channel and any account that is in it can read and delete them.
+        current = await session.get(Channel, job.channel_id)
+        if current is None:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, "The job points at a channel that is gone"
+            )
+        target = await channel_for_account(session, account_id, current.tg_id)
+        # Unless the request names one itself, which is the user changing both at once.
+        data.setdefault("channel_id", target.id)
+
+    if {"account_id", "channel_id", "local_path", "remote", "source_type"} & data.keys():
         await _validate(
             session,
-            job.account_id,
+            account_id,
             data.get("channel_id", job.channel_id),
             data.get("source_type", job.source_type),
             data.get("local_path", job.local_path),
             data.get("remote", job.remote),
         )
 
+    left_behind = job.channel_id
+
     for field, value in data.items():
         setattr(job, field, value)
+
+    if job.channel_id != left_behind:
+        # The scheduled check lives on the channel row and works through the jobs writing
+        # to it, so it follows the job when the row it was set on is left with none.
+        await session.flush()
+        await carry_channel_check(session, left_behind, job.channel_id)
+
     await session.commit()
     await session.refresh(job)
     return await _to_out(session, job)

@@ -90,12 +90,24 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
   });
 
   const account = accounts?.find((item) => item.id === accountId);
+  const movingAccount = job !== null && accountId !== null && accountId !== job.account_id;
 
   useEffect(() => {
     if (!job && account && partSize === "") {
       setPartSize(String(account.default_part_size / GIGA));
     }
   }, [account, job, partSize]);
+
+  // The account of an existing job has just been changed. Channel rows are per account,
+  // so the one that was selected belongs to the account being left: the row the new
+  // account holds for the same channel is found by its Telegram id. When that account has
+  // never listed its channels here there is nothing to pick, and the save resolves it on
+  // the server, which reads the dialogs of the account to do it.
+  useEffect(() => {
+    if (!job || channelId !== null || !channels) return;
+    const same = channels.find((item) => item.tg_id === job.channel_tg_id);
+    if (same) setChannelId(same.id);
+  }, [channels, channelId, job]);
 
   const save = useMutation({
     mutationFn: async () => {
@@ -122,8 +134,10 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
         enabled,
       };
       if (job) {
-        const { account_id: _ignored, ...rest } = payload;
-        return api.patch<Job>(`/api/jobs/${job.id}`, rest);
+        const { channel_id: _channel, ...withoutChannel } = payload;
+        // The channel is left out only when the new account has no row for it here yet:
+        // sending the one on screen would send the row of the account being left.
+        return api.patch<Job>(`/api/jobs/${job.id}`, channelId === null ? withoutChannel : payload);
       }
       return api.post<Job>("/api/jobs", payload);
     },
@@ -136,8 +150,11 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
 
   const privateChannels = (channels ?? []).filter((channel) => channel.is_private);
   const sourceReady = sourceType === "local" ? Boolean(localPath.trim()) : Boolean(remote.trim());
+  // A job being moved to another account may have no channel selected: the channel it
+  // already writes to is the one it keeps, and the server finds that account's row for it.
+  const channelReady = channelId !== null || movingAccount;
   const valid =
-    Boolean(name.trim()) && accountId !== null && channelId !== null && sourceReady &&
+    Boolean(name.trim()) && accountId !== null && channelReady && sourceReady &&
     Number(intervalHours) > 0 && Number(partSize) > 0;
 
   return (
@@ -172,7 +189,6 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
         <Field label="Telegram account">
           <select
             value={accountId ?? ""}
-            disabled={Boolean(job)}
             onChange={(e) => {
               setAccountId(Number(e.target.value));
               setChannelId(null);
@@ -206,6 +222,21 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
           </select>
         </Field>
       </div>
+
+      {movingAccount ? (
+        <Alert tone="info">
+          The job moves to {account?.label ?? "another account"} and keeps the channel
+          {job ? ` ${job.channel_title}` : ""} with everything already in it: the index is
+          not touched, since the messages belong to the channel and not to the account that
+          sent them. That account has to be in the channel, and an admin able to delete
+          messages there, or the files that disappear from the source cannot be removed
+          from the channel.
+          {account && Number(partSize) * GIGA > account.default_part_size
+            ? ` The split threshold is above the ${account.default_part_size / GIGA} GB` +
+              " this account may upload: lower it, or the next upload fails."
+            : ""}
+        </Alert>
+      ) : null}
 
       <Field label="File source">
         <div className="row" style={{ gap: 8 }}>

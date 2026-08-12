@@ -174,6 +174,20 @@ user and hide the actual message, so `_clean_error` strips them, dedupes and tru
 `get_entity` on a numeric id. A bare positive integer is read as a user, and `StringSession` does not
 keep the entity cache, so resolution would fail after a restart.
 
+**Moving a job to another account** (`channel_for_account` in `api/accounts.py`): the account of a job
+can be changed after it was created, and the channel goes with it. Channel rows are per account,
+the `access_hash` being issued per user, so the move repoints the job onto the row the new account
+holds for the same `tg_id`, built from that account's dialogs when there is none and refused when the
+account is not in the channel. The index is not touched at all: message ids belong to the channel, so
+an entry uploaded by one account is read, downloaded and deleted by another exactly as it was, which
+is the same fact the import of a channel already stands on. What membership alone does not give is
+the right to delete messages somebody else sent, and that is what a job needs to remove a file that
+disappeared from the source, so the form says it. `PATCH` carries `account_id` alone when the browser
+has no row of the new account to name, and the two together when the user changed both. The scheduled
+check is carried onto the new row when the old one is left with no sync job, since it finds what to
+compare through the jobs writing to that row and would otherwise go on checking nothing and reporting
+a healthy channel.
+
 **Schedule windows** (`sync/window.py`, `ScheduleGrid.tsx`): 168 characters on the job row, one per
 hour of the week, Monday 00:00 first, "1" open. A string and not a table because it is always read
 whole and never queried. It gates the interval, it does not replace it: a job becomes due exactly as

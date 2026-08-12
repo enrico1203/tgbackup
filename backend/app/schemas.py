@@ -147,6 +147,9 @@ class JobIn(BaseModel):
 
 class JobUpdate(BaseModel):
     name: str | None = None
+    # Moving the job to another Telegram account. Without a channel_id beside it the
+    # channel travels with the job, onto the row the new account holds for it.
+    account_id: int | None = None
     channel_id: int | None = None
     source_type: Literal["local", "rclone"] | None = None
     local_path: str | None = None
@@ -259,6 +262,7 @@ class DownloadJobIn(BaseModel):
 
 class DownloadJobUpdate(BaseModel):
     name: str | None = None
+    account_id: int | None = None
     channel_id: int | None = None
     dest_type: Literal["local", "rclone"] | None = None
     local_path: str | None = None

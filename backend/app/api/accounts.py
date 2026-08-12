@@ -184,3 +184,85 @@ async def list_channels(
         select(Channel).where(Channel.account_id == account_id).order_by(Channel.title)
     )
     return list(result.scalars())
+
+
+async def channel_for_account(session, account_id: int, tg_id: int) -> Channel:
+    """The row this account holds for one Telegram channel, fetched from its dialogs if new.
+
+    Channel rows are per account, because the access_hash is issued per user: moving a job
+    to another account means moving it to that account's own row for the same channel, and
+    never keeping the row of the account it is leaving. What the job holds is untouched by
+    that: message ids belong to the channel, so an index uploaded by one account is read,
+    downloaded and deleted by another exactly as it was.
+
+    A row that is already here is taken as it is, since it was written from the dialogs of
+    this account and therefore proves it saw the channel. When there is none, or it has no
+    access_hash to build a peer from, the dialogs are read and the failure to find the
+    channel there is the answer to give the user: this account is not in it.
+    """
+    channel = await session.scalar(
+        select(Channel).where(Channel.account_id == account_id, Channel.tg_id == tg_id)
+    )
+    if channel is not None and (channel.kind == "group" or channel.access_hash is not None):
+        return channel
+
+    account = await session.get(TelegramAccount, account_id)
+    label = account.label if account else str(account_id)
+    try:
+        fetched = await manager.list_channels(account_id)
+    except (TelegramError, OSError, ValueError) as exc:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"The channels of the account {label} could not be read: {exc}",
+        ) from exc
+
+    live = next((item for item in fetched if item["tg_id"] == tg_id), None)
+    if live is None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"The account {label} is not in this channel. Join it with that account, "
+            "then try again.",
+        )
+
+    if channel is None:
+        channel = Channel(account_id=account_id, tg_id=tg_id)
+        session.add(channel)
+    channel.access_hash = live["access_hash"]
+    channel.title = live["title"]
+    channel.username = live["username"]
+    channel.is_private = live["is_private"]
+    channel.kind = live["kind"]
+    channel.participants = live["participants"]
+    channel.last_seen_at = utcnow()
+    await session.flush()
+    return channel
+
+
+async def carry_channel_check(session, old_channel_id: int, new_channel_id: int) -> None:
+    """Moves an automatic check onto the row a job has just been moved to.
+
+    The scheduled check is configured on the channel row and finds what to compare through
+    the sync jobs writing to that row, so a row every job has left would go on running
+    against nothing at all and report a healthy channel for ever. It is carried only when
+    the old row is left with no sync job, and only onto a row that has no check of its own,
+    so nothing configured by hand is overwritten and no channel ends up checked twice.
+    """
+    old = await session.get(Channel, old_channel_id)
+    new = await session.get(Channel, new_channel_id)
+    if old is None or new is None or old.id == new.id:
+        return
+    if not old.check_interval_days or new.check_interval_days:
+        return
+
+    remaining = await session.scalar(
+        select(func.count(SyncJob.id)).where(SyncJob.channel_id == old.id)
+    )
+    if remaining:
+        return
+
+    new.check_interval_days = old.check_interval_days
+    new.check_hour = old.check_hour
+    new.check_repair = old.check_repair
+    new.last_check_at = old.last_check_at
+    new.last_check_result = old.last_check_result
+    old.check_interval_days = 0
