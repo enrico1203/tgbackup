@@ -184,7 +184,12 @@ export default function Explorer() {
   query.set("offset", String(page * PAGE_SIZE));
   query.set("limit", String(PAGE_SIZE));
 
-  const { data, isLoading, isFetching } = useQuery({
+  const {
+    data,
+    isLoading,
+    isFetching,
+    error: listingError,
+  } = useQuery({
     queryKey: ["explorer", query.toString()],
     queryFn: () => api.get<ExplorerListing>(`/api/explorer/list?${query.toString()}`),
     enabled: selected !== null,
@@ -467,6 +472,14 @@ export default function Explorer() {
         {isLoading ? (
           <div className="card-body row" style={{ color: "var(--muted)" }}>
             <Spinner /> Reading the index
+          </div>
+        ) : listingError ? (
+          // A listing that failed is not an empty channel, and showing it as one says the
+          // backup is not there when the request never got an answer.
+          <div className="card-body">
+            <Alert>
+              The index could not be read: {(listingError as Error).message}
+            </Alert>
           </div>
         ) : empty ? (
           <Empty

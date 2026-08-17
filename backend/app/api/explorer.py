@@ -147,10 +147,14 @@ async def list_folder(
 
     # One query for the whole channel rather than one per row: a channel is written by a
     # handful of jobs, and only the trashed rows will ask.
+    # `.all()` and not the result itself: a `Result` carries a `keys()`, so `dict()` takes
+    # it for a mapping and asks it for those keys instead of iterating its rows.
     retention = dict(
-        await session.execute(
-            select(SyncJob.id, SyncJob.trash_days).where(SyncJob.channel_id == channel_id)
-        )
+        (
+            await session.execute(
+                select(SyncJob.id, SyncJob.trash_days).where(SyncJob.channel_id == channel_id)
+            )
+        ).all()
     )
 
     # Two jobs writing the same path into one channel: the most recently uploaded wins,
