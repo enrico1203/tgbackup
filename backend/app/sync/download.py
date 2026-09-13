@@ -29,8 +29,9 @@ from sqlalchemy.orm import selectinload
 from telethon.errors import FloodWaitError
 
 from .. import notify
+from ..channels import account_rows, channel_group
 from ..db import SessionLocal
-from ..models import Channel, DownloadJob, DownloadRun, FileEntry, SyncJob, TelegramAccount, utcnow
+from ..models import Channel, DownloadJob, DownloadRun, FileEntry, TelegramAccount, utcnow
 from ..telegram.fast_transfer import download_document, stream_document
 from ..telegram.flood import FloodGate
 from ..telegram.manager import account_budget, manager
@@ -61,20 +62,23 @@ class IndexedFile:
     size: int
     mtime_ns: int
     parts: list[IndexedPart]
+    # The channel the parts are in, one of the group being downloaded.
+    channel_id: int = 0
 
 
-async def channel_index(session, channel_id: int) -> list[IndexedFile]:
-    """What the channel holds, according to the index of the jobs writing to it.
+async def channel_index(session, channel_ids: list[int]) -> list[IndexedFile]:
+    """What these channels hold, according to the index of the jobs writing to them.
 
     A channel can be the destination of several sync jobs, and two of them can hold the
     same relative path. Only one copy can be written to a single destination path: the one
     uploaded most recently wins, which is the same rule the file browser applies when it
-    shows a channel.
+    shows a channel. The ids are a group, a backup spread over several channels being read
+    back as the one backup it is.
     """
     result = await session.execute(
         select(FileEntry)
         .where(
-            FileEntry.job_id.in_(select(SyncJob.id).where(SyncJob.channel_id == channel_id)),
+            FileEntry.channel_id.in_(channel_ids),
             FileEntry.state == "uploaded",
         )
         .options(selectinload(FileEntry.parts))
@@ -105,6 +109,7 @@ async def channel_index(session, channel_id: int) -> list[IndexedFile]:
                     IndexedPart(part.part_index, part.offset, part.size, part.message_id)
                     for part in sorted(entry.parts, key=lambda p: p.part_index)
                 ],
+                channel_id=entry.channel_id,
             ),
         )
 
@@ -129,10 +134,13 @@ class DownloadRunner:
             if channel is None:
                 raise RuntimeError("The job channel no longer exists")
 
-            # Both of these can refuse the job as it is configured, and they run before
-            # the run row exists: a row written first would stay at "running" for ever,
-            # since nothing has started that could close it.
-            peer = manager.input_peer(channel)
+            # These can refuse the job as it is configured, and they run before the run row
+            # exists: a row written first would stay at "running" for ever, since nothing
+            # has started that could close it. The peers are one per channel of the group,
+            # each built from the row the account of this job holds for it.
+            group = await channel_group(session, job.channel_id)
+            rows = await account_rows(session, job.account_id, group)
+            peers = {channel_id: manager.input_peer(row) for channel_id, row in rows.items()}
             destination = build_destination(job)
 
             run = DownloadRun(job_id=job.id)
@@ -145,7 +153,6 @@ class DownloadRunner:
             run_id = run.id
             job_name = job.name
             account_id = job.account_id
-            channel_id = job.channel_id
 
             # Same limit a sync job takes, read the same way: the line does not care
             # which direction the bytes are going.
@@ -171,7 +178,7 @@ class DownloadRunner:
             await destination.prepare()
 
             async with SessionLocal() as session:
-                indexed = await channel_index(session, channel_id)
+                indexed = await channel_index(session, group)
             indexed_bytes = sum(item.size for item in indexed)
             progress.indexed_files = len(indexed)
             progress.indexed_bytes = indexed_bytes
@@ -232,7 +239,7 @@ class DownloadRunner:
                 progress.phase = "download"
                 await self._set_phase("download")
                 files, written, failed, last_error = await self._download_all(
-                    client, peer, destination, missing, progress, max_connections,
+                    client, peers, destination, missing, progress, max_connections,
                     limiter, flood,
                 )
 
@@ -295,7 +302,7 @@ class DownloadRunner:
         return await destination.list_files(on_progress=report)
 
     async def _download_all(
-        self, client, entity, destination, missing: list[IndexedFile], progress,
+        self, client, peers: dict, destination, missing: list[IndexedFile], progress,
         max_connections, limiter, flood,
     ) -> tuple[int, int, int, str | None]:
         files = 0
@@ -311,8 +318,8 @@ class DownloadRunner:
 
             try:
                 await self._download_one(
-                    client, entity, destination, item, progress, max_connections,
-                    limiter, flood,
+                    client, peers[item.channel_id], destination, item, progress,
+                    max_connections, limiter, flood,
                 )
             except JobCancelled:
                 raise
@@ -491,7 +498,15 @@ async def _report(job_id: int, status: str, error: str | None) -> None:
         job = await session.get(DownloadJob, job_id)
         if job is None:
             return
-        channel = await session.get(Channel, job.channel_id)
+        group = await channel_group(session, job.channel_id)
+        titles = dict(
+            (
+                await session.execute(
+                    select(Channel.id, Channel.title).where(Channel.id.in_(group))
+                )
+            ).all()
+        )
+        channel_names = [titles[cid] for cid in group if cid in titles]
         run = await session.scalar(
             select(DownloadRun)
             .where(DownloadRun.job_id == job_id)
@@ -502,7 +517,11 @@ async def _report(job_id: int, status: str, error: str | None) -> None:
 
     outcome = {"idle": "completed", "error": "failed"}.get(status, status)
     lines = [
-        f"Channel: {channel.title if channel else 'unknown'}",
+        (
+            f"Channels: {', '.join(channel_names)}"
+            if len(channel_names) > 1
+            else f"Channel: {channel_names[0] if channel_names else 'unknown'}"
+        ),
         f"Destination: {destination}",
     ]
     failed_files = 0

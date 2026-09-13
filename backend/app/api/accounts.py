@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import func, select
 
+from ..channels import ChannelError, account_channel, writer_jobs
 from ..deps import ActiveUserDep, SessionDep
 from ..models import Channel, SyncJob, TelegramAccount, utcnow
 from ..schemas import (
@@ -141,10 +142,12 @@ async def delete_account(account_id: int, session: SessionDep, _: ActiveUserDep)
     # The channel rows of an account go with it, and a job on a bot set may be writing to
     # one of them: it would lose its destination and its whole index without ever having
     # named this account. So the row has to be freed first, by moving that job elsewhere.
+    # An extra channel of a job counts exactly like its own: the files placed there cascade
+    # with the row just the same.
     borrowed = await session.scalar(
         select(func.count(SyncJob.id)).where(
-            SyncJob.channel_id.in_(
-                select(Channel.id).where(Channel.account_id == account_id)
+            SyncJob.id.in_(
+                writer_jobs(select(Channel.id).where(Channel.account_id == account_id))
             )
         )
     )
@@ -212,55 +215,13 @@ async def channel_for_account(session, account_id: int, tg_id: int) -> Channel:
     that: message ids belong to the channel, so an index uploaded by one account is read,
     downloaded and deleted by another exactly as it was.
 
-    A row that is already here is taken as it is, since it was written from the dialogs of
-    this account and therefore proves it saw the channel. When there is none, or it has no
-    access_hash to build a peer from, the dialogs are read and the failure to find the
-    channel there is the answer to give the user: this account is not in it.
+    The lookup itself lives in app/channels.py, where the download jobs and the restores
+    use it too; this is the same answer as an error the form can show.
     """
-    channel = await session.scalar(
-        select(Channel).where(Channel.account_id == account_id, Channel.tg_id == tg_id)
-    )
-    if channel is not None and (channel.kind == "group" or channel.access_hash is not None):
-        return channel
-
-    account = await session.get(TelegramAccount, account_id)
-    label = account.label if account else str(account_id)
     try:
-        fetched = await manager.list_channels(account_id)
-    except (TelegramError, OSError, ValueError) as exc:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"The channels of the account {label} could not be read: {exc}",
-        ) from exc
-
-    live = next((item for item in fetched if item["tg_id"] == tg_id), None)
-    if live is None:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"The account {label} is not in this channel. Join it with that account, "
-            "then try again.",
-        )
-
-    if channel is None:
-        # A row with no account behind it is one a bot set created by naming the channel,
-        # and it is adopted rather than duplicated: one Telegram channel is one row, so a
-        # job moved from a bot set onto an account keeps pointing at the same index.
-        channel = await session.scalar(
-            select(Channel).where(Channel.account_id.is_(None), Channel.tg_id == tg_id)
-        )
-    if channel is None:
-        channel = Channel(account_id=account_id, tg_id=tg_id)
-        session.add(channel)
-    channel.account_id = account_id
-    channel.access_hash = live["access_hash"]
-    channel.title = live["title"]
-    channel.username = live["username"]
-    channel.is_private = live["is_private"]
-    channel.kind = live["kind"]
-    channel.participants = live["participants"]
-    channel.last_seen_at = utcnow()
-    await session.flush()
-    return channel
+        return await account_channel(session, account_id, tg_id)
+    except ChannelError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
 
 async def carry_channel_check(session, old_channel_id: int, new_channel_id: int) -> None:

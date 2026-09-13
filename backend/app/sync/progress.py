@@ -69,11 +69,14 @@ class WorkerProgress:
     current_file: str | None = None
     current_part: int = 0
     current_parts: int = 0
+    # The channel the file is going into, set only on a job spread over several.
+    channel: str | None = None
 
     def snapshot(self) -> dict:
         return {
             "slot": self.slot,
             "label": self.label,
+            "channel": self.channel,
             "current_file": self.current_file,
             "current_part": self.current_part,
             "current_parts": self.current_parts,

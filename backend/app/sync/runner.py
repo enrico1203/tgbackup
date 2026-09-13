@@ -19,6 +19,7 @@ from telethon.errors import FloodWaitError
 from telethon.tl.types import DocumentAttributeFilename
 
 from .. import notify
+from ..channels import channel_fill, job_channel_ids
 from ..db import SessionLocal
 from ..models import (
     GUARD_MIN_ENTRIES,
@@ -170,11 +171,17 @@ class AccountTransport:
     kind = "account"
 
     def __init__(
-        self, job_id: int, account: TelegramAccount | None, account_id: int, peer, cancel
+        self,
+        job_id: int,
+        account: TelegramAccount | None,
+        account_id: int,
+        channels: dict[int, Channel],
+        cancel,
     ) -> None:
         self.account_id = account_id
         self.label = account.label if account else str(account_id)
-        self._peer = peer
+        self._channels = channels
+        self._peers: dict[int, object] = {}
         self.concurrency, self.max_connections = account_budget(account)
         # One file at a time: an account has one budget of twenty connections, and
         # splitting it across two files would only make both of them slower.
@@ -183,15 +190,29 @@ class AccountTransport:
         self.lock = manager.transfer_lock(account_id, self.concurrency)
         self.waiting_for = f"account {self.label}"
 
+    def _peer(self, channel_id: int):
+        # Built on first use rather than upfront: a channel row without an access hash
+        # raises here, and it should only stop the run if a file actually lives there.
+        peer = self._peers.get(channel_id)
+        if peer is None:
+            peer = manager.input_peer(self._channels[channel_id])
+            self._peers[channel_id] = peer
+        return peer
+
     async def control(self):
-        """The client the deletions and the cleanup go through."""
-        return await manager.get_client(self.account_id), self._peer
+        """The client the deletions and the cleanup go through, and a peer per channel."""
+        client = await manager.get_client(self.account_id)
+
+        async def peer(channel_id: int):
+            return self._peer(channel_id)
+
+        return client, peer
 
     @contextlib.asynccontextmanager
-    async def carrier(self, worker: WorkerProgress):
+    async def carrier(self, worker: WorkerProgress, channel_id: int):
         client = await manager.get_client(self.account_id)
         worker.label = self.label
-        yield client, self._peer, self.gate, self.max_connections
+        yield client, self._peer(channel_id), self.gate, self.max_connections
 
 
 class BotSetTransport:
@@ -214,13 +235,16 @@ class BotSetTransport:
         job_id: int,
         bot_set: BotSet,
         members: list[tuple[int, str]],
-        tg_id: int,
+        channels: dict[int, Channel],
+        primary: int,
         parallel_files: int,
         cancel,
     ) -> None:
         self.set_id = bot_set.id
         self.label = bot_set.name
-        self.tg_id = tg_id
+        # A bot resolves its own peer from the Telegram id, so the row is only a name here.
+        self._tg_ids = {channel_id: row.tg_id for channel_id, row in channels.items()}
+        self._primary = primary
         self._labels = dict(members)
         self.valid = {bot_id for bot_id, _ in members}
         self.concurrency, self.max_connections = bot_set_budget(bot_set)
@@ -249,7 +273,14 @@ class BotSetTransport:
         for bot_id in list(self.valid):
             try:
                 client = await bots.get_client(bot_id)
-                return client, await bots.peer(bot_id, self.tg_id)
+                # Resolved once here so a bot that cannot reach the job's channel is
+                # passed over now, not in the middle of the deletions.
+                await bots.peer(bot_id, self._tg_ids[self._primary])
+
+                async def peer(channel_id: int, bot_id=bot_id):
+                    return await bots.peer(bot_id, self._tg_ids[channel_id])
+
+                return client, peer
             except Exception as exc:
                 last = exc
                 log.warning("Bot %s is unusable: %s", self._labels.get(bot_id, bot_id), exc)
@@ -265,7 +296,7 @@ class BotSetTransport:
         bots.drop_from_pool(self.set_id, bot_id)
 
     @contextlib.asynccontextmanager
-    async def carrier(self, worker: WorkerProgress):
+    async def carrier(self, worker: WorkerProgress, channel_id: int):
         while True:
             if not self.valid:
                 raise NoCarrier(f"Every bot of the set {self.label} failed")
@@ -274,7 +305,7 @@ class BotSetTransport:
                 raise NoCarrier(f"Every bot of the set {self.label} failed")
             try:
                 client = await bots.get_client(bot_id)
-                peer = await bots.peer(bot_id, self.tg_id)
+                peer = await bots.peer(bot_id, self._tg_ids[channel_id])
             except Exception as exc:
                 # The bot is out for the rest of the run rather than for this file: a
                 # token that was revoked or a bot removed from the channel will fail in
@@ -293,8 +324,12 @@ class BotSetTransport:
             return
 
 
-async def build_transport(session, job: SyncJob, channel: Channel, cancel):
-    """Whoever is going to carry this job: its account, or the bots of its set."""
+async def build_transport(session, job: SyncJob, channels: dict[int, Channel], cancel):
+    """Whoever is going to carry this job: its account, or the bots of its set.
+
+    `channels` is every channel the run may have to talk to: the ones the job uploads
+    into, and any other still holding files of it that may need deleting.
+    """
     if job.bot_set_id is not None:
         bot_set = await session.get(BotSet, job.bot_set_id)
         if bot_set is None:
@@ -312,15 +347,13 @@ async def build_transport(session, job: SyncJob, channel: Channel, cancel):
                 "job onto an account"
             )
         return BotSetTransport(
-            job.id, bot_set, members, channel.tg_id, job.parallel_files, cancel
+            job.id, bot_set, members, channels, job.channel_id, job.parallel_files, cancel
         )
 
     if job.account_id is None:
         raise RuntimeError("The job has neither a Telegram account nor a bot set")
     account = await session.get(TelegramAccount, job.account_id)
-    return AccountTransport(
-        job.id, account, job.account_id, manager.input_peer(channel), cancel
-    )
+    return AccountTransport(job.id, account, job.account_id, channels, cancel)
 
 
 class JobRunner:
@@ -331,6 +364,13 @@ class JobRunner:
         # claiming the same file: the select and the commit that marks it `uploading` have
         # to be one step.
         self._claim = asyncio.Lock()
+        # The channels new files go into, the job's own first, and how many files each
+        # holds. The count is read once when the upload starts and kept up to date by the
+        # claims, under the same lock, so placing a file costs no query.
+        self._targets: list[int] = []
+        self._fill: dict[int, int] = {}
+        self._titles: dict[int, str] = {}
+        self._primary = 0
 
     def _check_cancel(self) -> None:
         if self.cancel.is_set():
@@ -344,6 +384,26 @@ class JobRunner:
             channel = await session.get(Channel, job.channel_id)
             if channel is None:
                 raise RuntimeError("The job channel no longer exists")
+
+            # Where new files go, and every channel that still holds files of this job.
+            # The two are the same set unless the index was put somewhere by hand, but a
+            # file has to be deletable from wherever it is.
+            self._primary = job.channel_id
+            self._targets = await job_channel_ids(session, job)
+            holding = await session.execute(
+                select(FileEntry.channel_id).where(FileEntry.job_id == job.id).distinct()
+            )
+            wanted = set(self._targets) | {channel_id for (channel_id,) in holding}
+            rows = {
+                row.id: row
+                for row in (
+                    await session.execute(select(Channel).where(Channel.id.in_(wanted)))
+                ).scalars()
+            }
+            gone = [channel_id for channel_id in self._targets if channel_id not in rows]
+            if gone:
+                raise RuntimeError("A channel of the job no longer exists")
+            self._titles = {channel_id: row.title for channel_id, row in rows.items()}
 
             run = JobRun(job_id=job.id)
             session.add(run)
@@ -361,7 +421,7 @@ class JobRunner:
             # Who carries the bytes, decided once: one account and one file at a time, or
             # the bots of a set and one file each. Everything below asks the transport
             # rather than the account, which is what makes the two paths one run.
-            transport = await build_transport(session, job, channel, self.cancel)
+            transport = await build_transport(session, job, rows, self.cancel)
 
             # The ceiling of this job under the one of the installation, following the
             # hours of the window: the provider is read as the bucket refills, so a run
@@ -381,7 +441,7 @@ class JobRunner:
         progress.flood = flood
 
         try:
-            client, entity = await transport.control()
+            client, peer_for = await transport.control()
 
             counters = await self._diff(source, run_id, progress)
             self._check_cancel()
@@ -395,7 +455,7 @@ class JobRunner:
                     "Job %d: %d files out of the trash have passed %d days",
                     self.job_id, purged, trash_days,
                 )
-            removed = await self._apply_deletions(client, entity)
+            removed = await self._apply_deletions(client, peer_for)
 
             # Two jobs on the same account would each open 20 connections and exceed the
             # per data center ceiling, blocking each other: the upload phase is serialized
@@ -532,6 +592,9 @@ class JobRunner:
                             size=item.size,
                             mtime_ns=item.mtime_ns,
                             state="pending",
+                            # A placeholder: the channel is chosen when the upload claims
+                            # the file, among those of the job holding the fewest.
+                            channel_id=self._primary,
                         )
                     )
                     added += 1
@@ -650,8 +713,12 @@ class JobRunner:
 
     # Deletions
 
-    async def _apply_deletions(self, client, entity) -> int:
-        """Deletes from Telegram what no longer exists at the source or needs re-uploading."""
+    async def _apply_deletions(self, client, peer_for) -> int:
+        """Deletes from Telegram what no longer exists at the source or needs re-uploading.
+
+        Each file is deleted from the channel it is in, which on a job spread over several
+        is not the same for every file of a batch.
+        """
         removed = 0
         while True:
             self._check_cancel()
@@ -668,15 +735,20 @@ class JobRunner:
                 if not entries:
                     return removed
 
-                message_ids: list[int] = []
+                by_channel: dict[int, list[int]] = {}
                 for entry in entries:
                     parts = await session.execute(
                         select(FilePart).where(FilePart.file_id == entry.id)
                     )
-                    message_ids.extend(part.message_id for part in parts.scalars())
+                    by_channel.setdefault(entry.channel_id, []).extend(
+                        part.message_id for part in parts.scalars()
+                    )
 
-                if message_ids:
-                    await self._delete_messages(client, entity, message_ids)
+                for channel_id, message_ids in by_channel.items():
+                    if message_ids:
+                        await self._delete_messages(
+                            client, await peer_for(channel_id), message_ids
+                        )
 
                 for entry in entries:
                     await session.execute(
@@ -723,10 +795,21 @@ class JobRunner:
             )
             count, total_bytes = totals.one()
 
+            self._fill = await channel_fill(session, self._targets)
+
         progress.files_total = count
         progress.bytes_total = total_bytes
         progress.files_done = 0
         progress.bytes_done = 0
+        if len(self._targets) > 1:
+            log.info(
+                "Job %d spreads its files over %d channels, holding %s",
+                self.job_id,
+                len(self._targets),
+                ", ".join(
+                    f"{self._titles.get(cid, cid)}: {self._fill[cid]}" for cid in self._targets
+                ),
+            )
 
         workers = [
             WorkerProgress(slot=index, label=transport.label)
@@ -762,13 +845,17 @@ class JobRunner:
 
         return sum(item[0] for item in results), sum(item[1] for item in results)
 
-    async def _claim_next(self) -> tuple[int, str, str, int] | None:
+    async def _claim_next(self) -> tuple[int, str, str, int, int] | None:
         """Takes the next pending file, marking it `uploading` so no other worker can.
 
         The lock is what makes the read and the write one step. Two workers selecting the
         same row and both committing it would upload the same file twice, into two sets of
         messages, of which only the last would be recorded and the first would stay in the
         channel with nothing pointing at it.
+
+        The channel is decided here too, and committed with the state: a part sent before
+        the entry knew its channel would be a message nothing could ever delete. Fewest
+        files wins, the job's own channel on a tie, and a file never moves once placed.
         """
         async with self._claim:
             async with SessionLocal() as session:
@@ -781,9 +868,15 @@ class JobRunner:
                 entry = result.scalar_one_or_none()
                 if entry is None:
                     return None
+                channel_id = min(
+                    self._targets,
+                    key=lambda cid: (self._fill.get(cid, 0), self._targets.index(cid)),
+                )
                 entry.state = "uploading"
+                entry.channel_id = channel_id
                 await session.commit()
-                return entry.id, entry.rel_path, entry.name, entry.size
+                self._fill[channel_id] = self._fill.get(channel_id, 0) + 1
+                return entry.id, entry.rel_path, entry.name, entry.size, channel_id
 
     async def _release(self, file_id: int) -> None:
         """Puts a claimed file back, when the transport could not take it after all."""
@@ -805,13 +898,14 @@ class JobRunner:
             if claimed is None:
                 worker.current_file = None
                 return uploaded_files, uploaded_bytes
-            file_id, rel_path, name, size = claimed
+            file_id, rel_path, name, size, channel_id = claimed
 
             worker.current_file = rel_path
+            worker.channel = self._titles.get(channel_id) if len(self._targets) > 1 else None
             progress.current_file = rel_path
 
             try:
-                async with transport.carrier(worker) as (
+                async with transport.carrier(worker, channel_id) as (
                     client, entity, flood, max_connections,
                 ):
                     try:
@@ -1078,7 +1172,15 @@ async def _report(job_id: int, status: str, error: str | None) -> None:
         job = await session.get(SyncJob, job_id)
         if job is None:
             return
-        channel = await session.get(Channel, job.channel_id)
+        channel_ids = await job_channel_ids(session, job)
+        titles = dict(
+            (
+                await session.execute(
+                    select(Channel.id, Channel.title).where(Channel.id.in_(channel_ids))
+                )
+            ).all()
+        )
+        channel_names = [titles[cid] for cid in channel_ids if cid in titles]
         run = await session.scalar(
             select(JobRun).where(JobRun.job_id == job_id).order_by(JobRun.id.desc()).limit(1)
         )
@@ -1097,7 +1199,11 @@ async def _report(job_id: int, status: str, error: str | None) -> None:
     outcome = {"idle": "completed", "error": "failed"}.get(status, status)
     lines = [
         f"Source: {source}",
-        f"Channel: {channel.title if channel else 'unknown'}",
+        (
+            f"Channels: {', '.join(channel_names)}"
+            if len(channel_names) > 1
+            else f"Channel: {channel_names[0] if channel_names else 'unknown'}"
+        ),
     ]
     if carrier:
         # Worth naming: a job on a bot set is reported through somebody else's account,

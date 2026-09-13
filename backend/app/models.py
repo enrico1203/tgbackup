@@ -299,6 +299,24 @@ class SyncJob(Base):
     channel: Mapped[Channel] = relationship()
 
 
+class SyncJobChannel(Base):
+    """A channel a job spreads its files over, beside the one it was created with.
+
+    A Telegram channel holds about a million messages, so a source larger than that needs
+    more than one. The runner places every new file in whichever of the job's channels
+    holds the fewest, and records the choice on the file entry, which is what everything
+    reading the file asks from then on. See app/channels.py.
+    """
+
+    __tablename__ = "sync_job_channels"
+    __table_args__ = (UniqueConstraint("job_id", "channel_id", name="uq_job_channel"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("sync_jobs.id", ondelete="CASCADE"))
+    channel_id: Mapped[int] = mapped_column(ForeignKey("channels.id", ondelete="CASCADE"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class DownloadJob(Base):
     """The inverse of a sync job: a channel poured back into a folder or a remote.
 
@@ -379,10 +397,17 @@ class FileEntry(Base):
     __table_args__ = (
         UniqueConstraint("job_id", "rel_path", name="uq_file_job_path"),
         Index("ix_file_job_state", "job_id", "state"),
+        # What a channel holds is asked by channel, state and path prefix: the explorer,
+        # the download jobs, the check, and the count that decides where a file goes.
+        Index("ix_file_channel_state_path", "channel_id", "state", "rel_path"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     job_id: Mapped[int] = mapped_column(ForeignKey("sync_jobs.id", ondelete="CASCADE"))
+    # The channel the parts of this file are in. A job spread over several channels puts
+    # each file in one of them, decided when the upload starts; until then, on a pending
+    # entry, it is the channel of the job and means nothing.
+    channel_id: Mapped[int] = mapped_column(ForeignKey("channels.id", ondelete="CASCADE"))
     rel_path: Mapped[str] = mapped_column(Text)
     name: Mapped[str] = mapped_column(Text)
     size: Mapped[int] = mapped_column(BigInteger)

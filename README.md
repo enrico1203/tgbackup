@@ -64,6 +64,9 @@ for changing the code.
 - **Bot sets**: a group of bots that are administrators of the same channel, used by a sync job as
   one uploader. Each bot is a Telegram account of its own, so a job on a set of five uploads five
   different files at the same time, with five separate sets of connections and five separate limits.
+- **More than one channel per job**: a channel holds about a million files, so a larger source can be
+  spread over several. Every new file goes into the one holding the fewest, and browsing, restoring
+  and download jobs read them all as one backup. Works with an account and with a bot set alike.
 - **Automatic split**: files above the threshold (3.9 GB with Telegram Premium, 1.9 GB without) are
   divided into parts, each with its own message id stored in the database.
 - **A real mirror**: a renamed or modified file means deletion from the channel and a fresh upload,
@@ -474,6 +477,24 @@ The number of connections is set per bot, not for the set: five bots at eight co
 in total, and what limits that is the line of the machine rather than Telegram, which counts them per
 account. If Telegram starts holding one bot back, that bot alone slows down and the others carry on,
 which is the whole reason for having several.
+
+## A job larger than one channel
+
+A Telegram channel holds about a million files. A source larger than that can be spread over several
+channels: open the job and, under **Spread over more channels**, add the others it may use. Each new
+file goes into whichever of those channels holds the fewest files, counting the files of every job
+writing there, and it stays in that channel for good. So a channel added later fills up first until
+it catches up with the others.
+
+- **Carrier**: with an account, the account has to be in every channel. With a bot set, every bot of
+  the set has to be an administrator of every channel. Both are checked when the job is saved.
+- **Reading back**: the explorer, a folder restore and a download job treat the channels as one
+  backup. Opening any of them shows the whole tree, and a download job pointed at one of them
+  downloads all of them, so its account has to be a member of each.
+- **Removing a channel**: a channel can be taken off a job only while none of the job's files are in
+  it, since that is where their messages are. New files simply stop going there.
+- **Export**: exporting goes one channel at a time as before. Importing each of those files in merge
+  mode rebuilds the one job spread over all of them.
 
 ## Changing the account of a job
 

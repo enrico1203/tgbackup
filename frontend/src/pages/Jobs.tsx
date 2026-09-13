@@ -11,6 +11,7 @@ import {
   FolderSearch,
   Gauge,
   HardDrive,
+  Hash,
   Pencil,
   Play,
   Plus,
@@ -18,6 +19,7 @@ import {
   Square,
   Trash2,
   UserCircle2,
+  X,
 } from "lucide-react";
 
 import { api } from "../lib/api";
@@ -66,6 +68,11 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
   const [parallelFiles, setParallelFiles] = useState(String(job?.parallel_files ?? 0));
   const [accountId, setAccountId] = useState<number | null>(job?.account_id ?? null);
   const [channelId, setChannelId] = useState<number | null>(job?.channel_id ?? null);
+  // The extra channels, kept by Telegram id and not by row: rows are per account, and a
+  // job moved to another account keeps the same channels under different rows.
+  const [extraTgIds, setExtraTgIds] = useState<number[]>(
+    (job?.channels ?? []).slice(1).map((item) => item.tg_id),
+  );
   const [sourceType, setSourceType] = useState<"local" | "rclone">(job?.source_type ?? "local");
   const [localPath, setLocalPath] = useState(job?.local_path ?? "");
   const [remote, setRemote] = useState(job?.remote ?? "");
@@ -121,6 +128,19 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
   const partCeiling =
     transport === "botset" ? (botSet?.default_part_size ?? 0) : (account?.default_part_size ?? 0);
 
+  const privateChannels =
+    transport === "botset"
+      ? (botChannels ?? [])
+      : (channels ?? []).filter((channel) => channel.is_private);
+  const primaryTgId = privateChannels.find((item) => item.id === channelId)?.tg_id;
+
+  // A channel picked as the job's own is not also one of its extra ones.
+  useEffect(() => {
+    if (primaryTgId !== undefined && extraTgIds.includes(primaryTgId)) {
+      setExtraTgIds((ids) => ids.filter((tgId) => tgId !== primaryTgId));
+    }
+  }, [primaryTgId, extraTgIds]);
+
   useEffect(() => {
     if (!job && partSize === "" && partCeiling > 0) {
       setPartSize(String(partCeiling / GIGA));
@@ -140,12 +160,19 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
 
   const save = useMutation({
     mutationFn: async () => {
+      const extraIds = extraTgIds.map(
+        (tgId) => privateChannels.find((item) => item.tg_id === tgId)?.id,
+      );
+      // When the account a job moves to has never listed its channels here, the extra
+      // ones cannot be named by row: they are left out and the server carries them over.
+      const extrasKnown = extraIds.every((id) => id !== undefined);
       const payload = {
         name: name.trim(),
         account_id: transport === "account" ? accountId : null,
         bot_set_id: transport === "botset" ? botSetId : null,
         parallel_files: Number(parallelFiles) || 0,
         channel_id: channelId,
+        ...(extrasKnown ? { extra_channel_ids: extraIds as number[] } : {}),
         source_type: sourceType,
         local_path: sourceType === "local" ? localPath.trim() : "",
         remote: sourceType === "rclone" ? remote.trim() : null,
@@ -179,10 +206,6 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
     onError: (exc) => setError(exc instanceof Error ? exc.message : "Saving failed"),
   });
 
-  const privateChannels =
-    transport === "botset"
-      ? (botChannels ?? [])
-      : (channels ?? []).filter((channel) => channel.is_private);
   const sourceReady = sourceType === "local" ? Boolean(localPath.trim()) : Boolean(remote.trim());
   // A job being moved to another account may have no channel selected: the channel it
   // already writes to is the one it keeps, and the server finds that account's row for it.
@@ -322,6 +345,68 @@ function JobForm({ job, onClose }: { job: Job | null; onClose: () => void }) {
           </select>
         </Field>
       </div>
+
+      <Field
+        label="Spread over more channels"
+        hint="A Telegram channel holds about a million files. For a source larger than that, add the other channels this job may use: every new file goes into whichever of them holds the fewest, counting the files of every job writing there, and stays there. Browsing, restoring and download jobs read all of them as one backup. A channel still holding files of this job cannot be taken away from it."
+      >
+        <div style={{ display: "grid", gap: 6 }}>
+          {extraTgIds.map((tgId) => {
+            const known = privateChannels.find((item) => item.tg_id === tgId);
+            const held = job?.channels?.find((item) => item.tg_id === tgId);
+            return (
+              <div key={tgId} className="row" style={{ gap: 8, fontSize: 13 }}>
+                <Hash size={13} style={{ opacity: 0.65 }} />
+                <span>{known?.title ?? held?.title ?? `Channel ${tgId}`}</span>
+                {held ? (
+                  <span className="num" style={{ color: "var(--muted)" }}>
+                    {held.files.toLocaleString("en-US")} files of this job
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  className="btn ghost small"
+                  style={{ marginLeft: "auto" }}
+                  onClick={() => setExtraTgIds(extraTgIds.filter((item) => item !== tgId))}
+                  title="Stop using this channel"
+                  aria-label="Stop using this channel"
+                >
+                  <X size={13} />
+                </button>
+              </div>
+            );
+          })}
+          <select
+            value=""
+            disabled={!carrierReady || channelId === null}
+            onChange={(e) => {
+              const picked = privateChannels.find((item) => item.id === Number(e.target.value));
+              if (picked) setExtraTgIds([...extraTgIds, picked.tg_id]);
+            }}
+          >
+            <option value="" disabled>
+              {channelId === null
+                ? "Pick the destination channel first"
+                : extraTgIds.length === 0
+                  ? "Only the destination channel. Add another"
+                  : "Add another channel"}
+            </option>
+            {privateChannels
+              .filter((item) => item.id !== channelId && !extraTgIds.includes(item.tg_id))
+              .map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.title}
+                </option>
+              ))}
+          </select>
+          {job && (job.channels?.length ?? 0) > 1 ? (
+            <span style={{ fontSize: 12, color: "var(--muted)" }}>
+              {job.channels?.[0].title} holds{" "}
+              {job.channels?.[0].files.toLocaleString("en-US")} files of this job.
+            </span>
+          ) : null}
+        </div>
+      </Field>
 
       {transport === "botset" ? (
         <Field
@@ -798,7 +883,14 @@ function JobCard({ job, onEdit }: { job: Job; onEdit: (job: Job) => void }) {
               {job.source_type === "rclone" ? job.remote : job.local_path}
             </span>
           </span>
-          <span>to {job.channel_title}</span>
+          <span>
+            to{" "}
+            {(job.channels?.length ?? 0) > 1
+              ? (job.channels ?? [])
+                  .map((item) => `${item.title} (${item.files.toLocaleString("en-US")})`)
+                  .join(", ")
+              : job.channel_title}
+          </span>
           <span>account {job.account_label}</span>
           <span>every {formatInterval(job.interval_hours)}</span>
           {job.schedule_hours.includes("0") ? (

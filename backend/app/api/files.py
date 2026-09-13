@@ -3,7 +3,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
 from ..deps import ActiveUserDep, SessionDep
-from ..models import FileEntry, SyncJob
+from ..models import FileEntry
 from ..schemas import FileOut, FilePage, RestoreIn, RestoreOut
 from ..sync.restore import restore_file
 
@@ -25,12 +25,8 @@ async def list_files(
     if job_id is not None:
         filters.append(FileEntry.job_id == job_id)
     if channel_id is not None:
-        # A channel can be the destination of several jobs: filter through them.
-        filters.append(
-            FileEntry.job_id.in_(
-                select(SyncJob.id).where(SyncJob.channel_id == channel_id)
-            )
-        )
+        # The files whose messages are in this channel, whichever job sent them.
+        filters.append(FileEntry.channel_id == channel_id)
     if state:
         filters.append(FileEntry.state == state)
     if search:

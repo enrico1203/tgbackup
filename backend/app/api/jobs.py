@@ -4,12 +4,23 @@ from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, status
-from sqlalchemy import case, func, select
+from sqlalchemy import case, delete, func, select, update
 
+from ..channels import job_channel_ids
 from ..deps import ActiveUserDep, SessionDep
-from ..models import Bot, BotSet, Channel, FileEntry, JobRun, SyncJob, TelegramAccount
+from ..models import (
+    READABLE_STATES,
+    Bot,
+    BotSet,
+    Channel,
+    FileEntry,
+    JobRun,
+    SyncJob,
+    SyncJobChannel,
+    TelegramAccount,
+)
 from ..rclone import client as rclone
-from ..schemas import JobIn, JobOut, JobRunOut, JobStats, JobUpdate
+from ..schemas import JobChannelOut, JobIn, JobOut, JobRunOut, JobStats, JobUpdate
 from ..sync import window
 from ..sync.scheduler import SYNC, scheduler
 from ..telegram.bots import bots
@@ -80,6 +91,7 @@ async def _to_out(session, job: SyncJob, zone: ZoneInfo | None = None) -> JobOut
     out.channel_title = channel.title if channel else ""
     out.channel_tg_id = channel.tg_id if channel else 0
     out.stats = await _stats(session, job.id)
+    out.channels = await _channels_out(session, job, out.stats)
 
     # The zone is read once per request when a whole list is being built, since it is one
     # value for the installation and the same for every row.
@@ -89,6 +101,42 @@ async def _to_out(session, job: SyncJob, zone: ZoneInfo | None = None) -> JobOut
     out.window_open = window.is_open(job.schedule_hours, zone, now)
     out.next_window_at = window.next_opening(job.schedule_hours, zone, now)
     return out
+
+
+async def _channels_out(session, job: SyncJob, stats: JobStats) -> list[JobChannelOut]:
+    """The channels of the job with how many of its files each one holds.
+
+    The count per channel costs a grouped query over the files of the job, so it is only
+    asked of a job that actually has more than one: on the others the totals already
+    computed say the same thing.
+    """
+    ids = await job_channel_ids(session, job)
+    rows = {
+        row.id: row
+        for row in (await session.execute(select(Channel).where(Channel.id.in_(ids)))).scalars()
+    }
+    if len(ids) > 1:
+        counts = dict(
+            (
+                await session.execute(
+                    select(FileEntry.channel_id, func.count(FileEntry.id))
+                    .where(FileEntry.job_id == job.id, FileEntry.state.in_(READABLE_STATES))
+                    .group_by(FileEntry.channel_id)
+                )
+            ).all()
+        )
+    else:
+        counts = {job.channel_id: stats.files_uploaded + stats.files_trashed}
+    return [
+        JobChannelOut(
+            id=channel_id,
+            title=rows[channel_id].title,
+            tg_id=rows[channel_id].tg_id,
+            files=counts.get(channel_id, 0),
+        )
+        for channel_id in ids
+        if channel_id in rows
+    ]
 
 
 @router.get("", response_model=list[JobOut])
@@ -125,6 +173,7 @@ async def _validate(
     account_id: int | None,
     bot_set_id: int | None,
     channel_id: int,
+    extra_channel_ids: list[int],
     source_type: str,
     local_path: str,
     remote: str | None,
@@ -134,6 +183,20 @@ async def _validate(
     channel = await session.get(Channel, channel_id)
     if channel is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Channel not found")
+
+    # Every channel the job uploads into gets the same checks its own channel always had:
+    # a file placed in a channel the carrier cannot reach is a file that fails, one run
+    # after the other, with the other channels working fine and hiding it.
+    channels = [channel]
+    for extra_id in extra_channel_ids:
+        extra = await session.get(Channel, extra_id)
+        if extra is None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "One of the extra channels is gone")
+        channels.append(extra)
+    if len({item.tg_id for item in channels}) != len(channels):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "The same channel is listed more than once"
+        )
 
     if bot_set_id is not None:
         bot_set = await session.get(BotSet, bot_set_id)
@@ -152,11 +215,14 @@ async def _validate(
         # first run: a bot that was never added is a job that uploads with one fewer
         # carrier and says nothing about why.
         missing: list[str] = []
-        for bot in members:
-            try:
-                await bots.peer(bot.id, channel.tg_id)
-            except Exception as exc:
-                missing.append(f"{bot.username or bot.id} ({exc})")
+        for item in channels:
+            for bot in members:
+                try:
+                    await bots.peer(bot.id, item.tg_id)
+                except Exception as exc:
+                    label = bot.username or bot.id
+                    prefix = f"{label} in {item.title}" if len(channels) > 1 else f"{label}"
+                    missing.append(f"{prefix} ({exc})")
         if missing:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
@@ -167,10 +233,12 @@ async def _validate(
         account = await session.get(TelegramAccount, account_id)
         if account is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Telegram account not found")
-        if channel.account_id != account_id:
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST, "The channel does not belong to this account"
-            )
+        for item in channels:
+            if item.account_id != account_id:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    f"The channel {item.title} does not belong to this account",
+                )
 
     if source_type == "rclone":
         if not remote:
@@ -214,13 +282,70 @@ async def _default_part_size(
     return account.default_part_size if account else 1_900_000_000
 
 
+async def _relocate_files(session, job_id: int, channel_ids: list[int]) -> None:
+    """Keeps every file of the job pointing at a channel the job still has.
+
+    The channels change in two ways that look alike and are not. The job moves onto
+    another account: the Telegram channels stay, only the rows do not, since rows are per
+    account, and the files follow onto the new row with the same Telegram id. Or the user
+    takes a channel away: the messages of the files in it are still there and nothing else
+    would ever delete them, so that is refused while any file is left in it.
+
+    A pending file has no message yet. Its channel is a placeholder the runner replaces,
+    so it simply goes to the job's own channel.
+    """
+    rows = {
+        row.id: row
+        for row in (
+            await session.execute(select(Channel).where(Channel.id.in_(channel_ids)))
+        ).scalars()
+    }
+    by_tg = {rows[cid].tg_id: cid for cid in channel_ids if cid in rows}
+
+    holding = await session.execute(
+        select(FileEntry.channel_id, func.count(FileEntry.id))
+        .where(FileEntry.job_id == job_id, FileEntry.state != "pending")
+        .group_by(FileEntry.channel_id)
+    )
+    for current_id, count in holding.all():
+        if current_id in rows:
+            continue
+        current = await session.get(Channel, current_id)
+        target = by_tg.get(current.tg_id) if current is not None else None
+        if target is None:
+            title = current.title if current is not None else f"channel {current_id}"
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"{count} files of this job are in {title}, so it cannot be taken away "
+                "from the job: that is where their messages are. Keep it among the "
+                "channels of the job.",
+            )
+        await session.execute(
+            update(FileEntry)
+            .where(FileEntry.job_id == job_id, FileEntry.channel_id == current_id)
+            .values(channel_id=target)
+        )
+
+    await session.execute(
+        update(FileEntry)
+        .where(
+            FileEntry.job_id == job_id,
+            FileEntry.state == "pending",
+            FileEntry.channel_id.not_in(channel_ids),
+        )
+        .values(channel_id=channel_ids[0])
+    )
+
+
 @router.post("", response_model=JobOut, status_code=status.HTTP_201_CREATED)
 async def create_job(payload: JobIn, session: SessionDep, _: ActiveUserDep) -> JobOut:
+    extras = [cid for cid in dict.fromkeys(payload.extra_channel_ids) if cid != payload.channel_id]
     await _validate(
         session,
         payload.account_id,
         payload.bot_set_id,
         payload.channel_id,
+        extras,
         payload.source_type,
         payload.local_path,
         payload.remote,
@@ -262,6 +387,9 @@ async def create_job(payload: JobIn, session: SessionDep, _: ActiveUserDep) -> J
         enabled=payload.enabled,
     )
     session.add(job)
+    await session.flush()
+    for extra_id in extras:
+        session.add(SyncJobChannel(job_id=job.id, channel_id=extra_id))
     await session.commit()
     await session.refresh(job)
     return await _to_out(session, job)
@@ -280,6 +408,8 @@ async def update_job(
         )
 
     data = payload.model_dump(exclude_unset=True)
+    extras: list[int] | None = data.pop("extra_channel_ids", None)
+    current_extras = (await job_channel_ids(session, job))[1:]
     # A null on either of the two is how the browser says "not this one", and it is
     # dropped: what names the new carrier is the field that carries a value. Naming one
     # clears the other, since a job runs on exactly one.
@@ -308,14 +438,30 @@ async def update_job(
         target = await channel_for_account(session, account_id, current.tg_id)
         # Unless the request names one itself, which is the user changing both at once.
         data.setdefault("channel_id", target.id)
+        if extras is None:
+            # The extra channels travel the same way, each onto the new account's row.
+            extras = []
+            for extra_id in current_extras:
+                extra = await session.get(Channel, extra_id)
+                if extra is not None:
+                    extras.append(
+                        (await channel_for_account(session, account_id, extra.tg_id)).id
+                    )
+
+    primary = data.get("channel_id", job.channel_id)
+    if extras is None:
+        extras = current_extras
+    extras = [cid for cid in dict.fromkeys(extras) if cid != primary]
+    channels_changed = primary != job.channel_id or extras != current_extras
 
     keys = {"account_id", "bot_set_id", "channel_id", "local_path", "remote", "source_type"}
-    if keys & data.keys():
+    if keys & data.keys() or channels_changed:
         await _validate(
             session,
             account_id,
             bot_set_id,
-            data.get("channel_id", job.channel_id),
+            primary,
+            extras,
             data.get("source_type", job.source_type),
             data.get("local_path", job.local_path),
             data.get("remote", job.remote),
@@ -326,6 +472,12 @@ async def update_job(
             ceiling = await _default_part_size(session, None, bot_set_id)
             if job.part_size_bytes > ceiling and "part_size_bytes" not in data:
                 data["part_size_bytes"] = ceiling
+
+    if channels_changed:
+        await _relocate_files(session, job.id, [primary, *extras])
+        await session.execute(delete(SyncJobChannel).where(SyncJobChannel.job_id == job.id))
+        for extra_id in extras:
+            session.add(SyncJobChannel(job_id=job.id, channel_id=extra_id))
 
     left_behind = job.channel_id
 

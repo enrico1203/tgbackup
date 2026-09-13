@@ -111,6 +111,14 @@ export interface JobStats {
   bytes_trashed: number;
 }
 
+export interface JobChannel {
+  id: number;
+  title: string;
+  tg_id: number;
+  /** Files of the job whose messages are in this channel, trash included. */
+  files: number;
+}
+
 export interface Job {
   id: number;
   name: string;
@@ -151,6 +159,8 @@ export interface Job {
   transport: "account" | "botset";
   channel_title: string;
   channel_tg_id: number;
+  /** Every channel the job uploads into, its own first. Optional: an older backend sends none. */
+  channels?: JobChannel[];
   stats: JobStats;
   window_open: boolean;
   next_window_at: string | null;
@@ -209,6 +219,8 @@ export interface DownloadJob {
   account_label: string;
   channel_title: string;
   channel_tg_id: number;
+  /** Every channel the job reads, the one picked first. */
+  channels?: string[];
   stats: DownloadStats;
   window_open: boolean;
   next_window_at: string | null;
@@ -278,6 +290,8 @@ export interface ExplorerFile {
 export interface ExplorerListing {
   channel_id: number;
   channel_title: string;
+  /** The channels the listing is read from, more than one for a backup spread over several. */
+  channels?: string[];
   path: string;
   query: string;
   folders: ExplorerFolder[];
@@ -435,6 +449,8 @@ export interface Dashboard {
 export interface UploadWorker {
   slot: number;
   label: string;
+  /** The channel the file goes into, set only on a job spread over several. */
+  channel?: string | null;
   current_file: string | null;
   current_part: number;
   current_parts: number;

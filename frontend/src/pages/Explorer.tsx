@@ -304,6 +304,15 @@ export default function Explorer() {
         </CardHead>
 
         <div className="card-body">
+          {data && (data.channels?.length ?? 0) > 1 ? (
+            // One backup spread over several channels is shown as the one tree it is, and
+            // saying so explains why a file can be opened from a channel it is not in.
+            <div style={{ fontSize: 12.5, color: "var(--muted)" }}>
+              This backup is spread over {data.channels?.length} channels,{" "}
+              {data.channels?.join(", ")}. The tree shows them together and every file is
+              read from the channel it is in.
+            </div>
+          ) : null}
           <div className="explorer-bar">
             <button
               type="button"

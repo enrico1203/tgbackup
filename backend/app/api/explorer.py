@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 
+from ..channels import ChannelError, account_rows, channel_group, writer_jobs
 from ..deps import ActiveUserDep, SessionDep
 from ..models import (
     READABLE_STATES,
@@ -113,6 +114,14 @@ async def list_folder(
 
     # A channel can be the destination of several jobs, and what it holds is the union of
     # their entries. Only files that made it to Telegram: the rest are not there to open.
+    # A job spread over several channels is one backup, so the channels it shares with
+    # this one are read with it and the tree comes out whole.
+    group = await channel_group(session, channel_id)
+    titles = dict(
+        (
+            await session.execute(select(Channel.id, Channel.title).where(Channel.id.in_(group)))
+        ).all()
+    )
     stmt = select(
         FileEntry.id,
         FileEntry.rel_path,
@@ -123,7 +132,7 @@ async def list_folder(
         FileEntry.trashed_at,
         FileEntry.job_id,
     ).where(
-        FileEntry.job_id.in_(select(SyncJob.id).where(SyncJob.channel_id == channel_id)),
+        FileEntry.channel_id.in_(group),
     )
     if as_of is not None:
         moment = as_of if as_of.tzinfo is not None else as_of.replace(tzinfo=UTC)
@@ -152,7 +161,7 @@ async def list_folder(
     retention = dict(
         (
             await session.execute(
-                select(SyncJob.id, SyncJob.trash_days).where(SyncJob.channel_id == channel_id)
+                select(SyncJob.id, SyncJob.trash_days).where(SyncJob.id.in_(writer_jobs(group)))
             )
         ).all()
     )
@@ -255,6 +264,7 @@ async def list_folder(
     return ExplorerListing(
         channel_id=channel_id,
         channel_title=channel.title,
+        channels=[titles[cid] for cid in group if cid in titles],
         path=folder,
         query=q.strip(),
         folders=[entry for entry in page if isinstance(entry, ExplorerFolder)],
@@ -290,7 +300,7 @@ async def create_ticket(
     job = await session.get(SyncJob, entry.job_id)
     if job is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "The job of this file no longer exists")
-    channel = await session.get(Channel, job.channel_id)
+    channel = await session.get(Channel, entry.channel_id)
     await _connected_client(await _reader(session, channel, job))
 
     ticket = create_download_ticket(user.id, entry.id)
@@ -483,7 +493,8 @@ async def download_file(
         )
 
     job = await session.get(SyncJob, entry.job_id)
-    channel = await session.get(Channel, job.channel_id) if job else None
+    # The channel the parts are in, which on a job spread over several is the file's own.
+    channel = await session.get(Channel, entry.channel_id) if job else None
     if job is None or channel is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "The job of this file no longer exists")
 
@@ -501,7 +512,12 @@ async def download_file(
     account_id = await _reader(session, channel, job)
     account = await session.get(TelegramAccount, account_id)
     concurrency, max_connections = account_budget(account)
-    peer = manager.input_peer(channel)
+    try:
+        rows = await account_rows(session, account_id, [channel.id])
+    except ChannelError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    peer = manager.input_peer(rows[channel.id])
+    await session.commit()
     client = await _connected_client(account_id)
 
     log.info(

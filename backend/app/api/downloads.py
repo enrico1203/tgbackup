@@ -6,8 +6,9 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import func, select
 
+from ..channels import ChannelError, account_rows, channel_group
 from ..deps import ActiveUserDep, SessionDep
-from ..models import Channel, DownloadJob, DownloadRun, FileEntry, SyncJob, TelegramAccount
+from ..models import Channel, DownloadJob, DownloadRun, FileEntry, TelegramAccount
 from ..rclone import client as rclone
 from ..schemas import (
     DownloadJobIn,
@@ -23,21 +24,20 @@ from .accounts import channel_for_account
 router = APIRouter(prefix="/api/downloads", tags=["downloads"])
 
 
-async def _stats(session, job: DownloadJob) -> DownloadStats:
-    """What the channel holds, and how much of it reached the destination.
+async def _stats(session, job: DownloadJob, group: list[int]) -> DownloadStats:
+    """What the channels hold, and how much of it reached the destination.
 
-    The index side is read live. The destination side comes from the last finished run:
-    counting it again here would mean walking a folder or listing a remote on every call
-    to the jobs list, which is the work of a run, not of a page refresh.
+    The index side is read live, over the whole group the job reads. The destination side
+    comes from the last finished run: counting it again here would mean walking a folder or
+    listing a remote on every call to the jobs list, which is the work of a run, not of a
+    page refresh.
     """
     row = await session.execute(
         select(
             func.count(FileEntry.id),
             func.coalesce(func.sum(FileEntry.size), 0),
         ).where(
-            FileEntry.job_id.in_(
-                select(SyncJob.id).where(SyncJob.channel_id == job.channel_id)
-            ),
+            FileEntry.channel_id.in_(group),
             FileEntry.state == "uploaded",
         )
     )
@@ -69,7 +69,14 @@ async def _to_out(
     out.account_label = account.label if account else ""
     out.channel_title = channel.title if channel else ""
     out.channel_tg_id = channel.tg_id if channel else 0
-    out.stats = await _stats(session, job)
+    group = await channel_group(session, job.channel_id)
+    titles = dict(
+        (
+            await session.execute(select(Channel.id, Channel.title).where(Channel.id.in_(group)))
+        ).all()
+    )
+    out.channels = [titles[cid] for cid in group if cid in titles]
+    out.stats = await _stats(session, job, group)
 
     if zone is None:
         zone = window.load_zone(await window.load_timezone(session))
@@ -111,6 +118,20 @@ async def _validate(
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "The channel does not belong to this account"
         )
+
+    # A backup spread over several channels is downloaded whole, so the account has to be
+    # able to read every one of them. Checked now, reading its dialogs when a row is
+    # missing, rather than as a run that fails on the first file placed elsewhere.
+    group = await channel_group(session, channel_id)
+    if len(group) > 1:
+        try:
+            await account_rows(session, account_id, group)
+        except ChannelError as exc:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"This channel is part of a backup spread over {len(group)} channels, "
+                f"and all of them are downloaded: {exc}",
+            ) from exc
 
     if dest_type == "rclone":
         if not remote:

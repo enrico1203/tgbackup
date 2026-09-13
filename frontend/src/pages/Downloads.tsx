@@ -479,7 +479,10 @@ function DownloadCard({
         {remove.isError ? <Alert>{(remove.error as Error).message}</Alert> : null}
 
         <div className="row wrap" style={{ gap: 24, fontSize: 12.5, color: "var(--muted)" }}>
-          <span>from {job.channel_title}</span>
+          <span>
+            from{" "}
+            {(job.channels?.length ?? 0) > 1 ? job.channels?.join(", ") : job.channel_title}
+          </span>
           <span className="row" style={{ gap: 6 }}>
             {job.dest_type === "rclone" ? <HardDrive size={12} /> : <FolderOpen size={12} />}
             <span className="mono">

@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select
 
 from .. import maintenance
+from ..channels import writer_jobs
 from ..deps import ActiveUserDep, SessionDep
 from ..models import Channel, SyncJob
 from ..schemas import ChannelOut, CheckIn, CheckScheduleIn, MaintenanceTaskOut, RebuildIn
@@ -63,7 +64,8 @@ async def rebuild(payload: RebuildIn, session: SessionDep, _: ActiveUserDep) -> 
 
     if payload.mode == "merge":
         job = await session.get(SyncJob, payload.job_id) if payload.job_id else None
-        if job is None or job.channel_id != channel.id:
+        writers = set((await session.execute(writer_jobs([channel.id]))).scalars())
+        if job is None or job.id not in writers:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST, "Pick a job that writes to this channel"
             )
@@ -100,6 +102,6 @@ async def channel_jobs(channel_id: int, session: SessionDep, _: ActiveUserDep) -
     """The sync jobs writing to a channel, to pick the one a rebuild merges into."""
     await _channel_or_404(session, channel_id)
     result = await session.execute(
-        select(SyncJob.id, SyncJob.name).where(SyncJob.channel_id == channel_id)
+        select(SyncJob.id, SyncJob.name).where(SyncJob.id.in_(writer_jobs([channel_id])))
     )
     return [{"id": job_id, "name": name} for job_id, name in result]

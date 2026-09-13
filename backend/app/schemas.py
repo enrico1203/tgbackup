@@ -222,6 +222,9 @@ class JobIn(BaseModel):
     # account, whose twenty connections belong to one file at a time.
     parallel_files: int = Field(default=0, ge=0, le=20)
     channel_id: int
+    # Channels the job spreads its files over beside `channel_id`, for a source larger
+    # than one channel holds. Every new file goes into whichever holds the fewest.
+    extra_channel_ids: list[int] = Field(default_factory=list, max_length=50)
     source_type: Literal["local", "rclone"] = "local"
     local_path: str = ""
     remote: str | None = None
@@ -251,6 +254,9 @@ class JobUpdate(BaseModel):
     bot_set_id: int | None = None
     parallel_files: int | None = Field(default=None, ge=0, le=20)
     channel_id: int | None = None
+    # The whole list, replacing the one on the job. Left out, the extra channels stay, and
+    # follow the job onto the rows of a new account when the account changes.
+    extra_channel_ids: list[int] | None = Field(default=None, max_length=50)
     source_type: Literal["local", "rclone"] | None = None
     local_path: str | None = None
     remote: str | None = None
@@ -279,6 +285,14 @@ class JobStats(BaseModel):
     bytes_total: int = 0
     bytes_uploaded: int = 0
     bytes_trashed: int = 0
+
+
+class JobChannelOut(BaseModel):
+    id: int
+    title: str
+    tg_id: int
+    # Files of this job whose messages are in that channel, trash included.
+    files: int = 0
 
 
 class JobOut(Model):
@@ -324,6 +338,8 @@ class JobOut(Model):
     channel_title: str = ""
     # Used by the frontend to build the t.me/c/<channel>/<message> links.
     channel_tg_id: int = 0
+    # Every channel the job uploads into, its own first: one entry on an ordinary job.
+    channels: list[JobChannelOut] = []
     stats: JobStats = JobStats()
     # Computed from the window and the timezone of the installation: whether the job may
     # start right now and, if not, when it may. Computed here because the browser would
@@ -424,6 +440,8 @@ class DownloadJobOut(Model):
     account_label: str = ""
     channel_title: str = ""
     channel_tg_id: int = 0
+    # Every channel the job reads: the one picked and the ones a sync job spread it with.
+    channels: list[str] = []
     stats: DownloadStats = DownloadStats()
     window_open: bool = True
     next_window_at: datetime | None = None
@@ -505,6 +523,9 @@ class ExplorerFile(BaseModel):
 class ExplorerListing(BaseModel):
     channel_id: int
     channel_title: str
+    # The channels the listing is read from, this one first. More than one when a sync
+    # job spreads its files over several: the backup is shown whole, whichever is opened.
+    channels: list[str] = []
     path: str
     # What was searched for, echoed back. Empty means this is a plain folder listing and
     # the entries are the ones directly inside it; set, it means the folders and files

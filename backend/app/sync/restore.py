@@ -26,6 +26,7 @@ from dataclasses import dataclass
 
 from sqlalchemy import select
 
+from ..channels import account_rows, channel_group
 from ..config import settings
 from ..db import SessionLocal
 from ..models import (
@@ -72,6 +73,9 @@ class _Item:
     size: int
     mtime_ns: int
     parts: list[tuple[int, int, int, int]]
+    # The peer of the channel the parts are in. A folder of a backup spread over several
+    # channels holds files from all of them.
+    peer: object = None
 
 
 def _build_destination(
@@ -134,7 +138,6 @@ async def _budget(session, account_id: int) -> tuple[int, int]:
 async def _start(
     items: list[_Item],
     account_id: int,
-    peer,
     concurrency: int,
     max_connections: int,
     dest_type: str,
@@ -174,7 +177,7 @@ async def _start(
 
     task = asyncio.create_task(
         _run_restore(
-            progress, account_id, peer, items, destination, strip, cancel,
+            progress, account_id, items, destination, strip, cancel,
             concurrency, max_connections,
         ),
         name=f"restore-{restore_id}",
@@ -194,23 +197,27 @@ async def restore_file(file_id: int, dest_type: str = "container", target: str =
             raise ValueError("The file has not been uploaded to Telegram")
 
         job = await session.get(SyncJob, entry.job_id)
-        channel = await session.get(Channel, job.channel_id)
+        # The channel of the file and not of the job: on a job spread over several
+        # channels the two are different for most files.
+        channel = await session.get(Channel, entry.channel_id)
+        account_id = await reader_account(session, channel, job)
+        rows = await account_rows(session, account_id, [entry.channel_id])
         item = _Item(
             rel_path=entry.rel_path,
             name=entry.name,
             size=entry.size,
             mtime_ns=entry.mtime_ns,
             parts=await _parts_of(session, file_id),
+            peer=manager.input_peer(rows[entry.channel_id]),
         )
-        account_id = await reader_account(session, channel, job)
-        peer = manager.input_peer(channel)
         concurrency, max_connections = await _budget(session, account_id)
+        await session.commit()
 
     if not item.parts:
         raise ValueError("No parts recorded for this file")
 
     return await _start(
-        [item], account_id, peer, concurrency, max_connections,
+        [item], account_id, concurrency, max_connections,
         dest_type, target, item.name, "", item.rel_path,
     )
 
@@ -234,8 +241,11 @@ async def restore_folder(
         if channel is None:
             raise ValueError("Channel not found")
 
+        # The channels a sync job spread this one with are read as well, exactly as the
+        # listing the folder was picked from reads them.
+        group = await channel_group(session, channel_id)
         stmt = select(FileEntry).where(
-            FileEntry.job_id.in_(select(SyncJob.id).where(SyncJob.channel_id == channel_id)),
+            FileEntry.channel_id.in_(group),
             FileEntry.state.in_(READABLE_STATES),
         )
         if prefix:
@@ -255,6 +265,12 @@ async def restore_folder(
             ):
                 unique[entry.rel_path] = entry
 
+        account_id = await reader_account(session, channel)
+        rows = await account_rows(
+            session, account_id, {entry.channel_id for entry in unique.values()}
+        )
+        peers = {cid: manager.input_peer(row) for cid, row in rows.items()}
+
         items: list[_Item] = []
         for entry in sorted(unique.values(), key=lambda row: row.rel_path):
             parts = await _parts_of(session, entry.id)
@@ -270,19 +286,19 @@ async def restore_folder(
                     size=entry.size,
                     mtime_ns=entry.mtime_ns,
                     parts=parts,
+                    peer=peers[entry.channel_id],
                 )
             )
 
         if not items:
             raise ValueError("There is nothing to restore in this folder")
 
-        account_id = await reader_account(session, channel)
         channel_title = channel.title
-        peer = manager.input_peer(channel)
         concurrency, max_connections = await _budget(session, account_id)
+        await session.commit()
 
     restore_id = await _start(
-        items, account_id, peer, concurrency, max_connections,
+        items, account_id, concurrency, max_connections,
         dest_type, target, path.rsplit("/", 1)[-1] or channel_title, prefix, prefix,
     )
     return restore_id, len(items), sum(item.size for item in items)
@@ -366,7 +382,6 @@ async def _restore_one(
 async def _run_restore(
     progress: RestoreProgress,
     account_id: int,
-    entity,
     items: list[_Item],
     destination: LocalDestination | RcloneDestination,
     strip: str,
@@ -398,7 +413,7 @@ async def _run_restore(
                 # and the jobs would sit in `waiting` for all of it.
                 async with lock:
                     await _restore_one(
-                        client, entity, item, destination, rel_path,
+                        client, item.peer, item, destination, rel_path,
                         progress, cancel, max_connections, limiter, flood,
                     )
             except asyncio.CancelledError:

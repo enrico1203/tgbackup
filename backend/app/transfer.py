@@ -29,10 +29,19 @@ import re
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, insert, select
+from sqlalchemy import func, insert, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import Channel, FileEntry, FilePart, SyncJob, TelegramAccount, utcnow
+from .channels import job_channel_ids, writer_jobs
+from .models import (
+    Channel,
+    FileEntry,
+    FilePart,
+    SyncJob,
+    SyncJobChannel,
+    TelegramAccount,
+    utcnow,
+)
 from .telegram.manager import TelegramError, manager
 
 log = logging.getLogger(__name__)
@@ -76,34 +85,40 @@ def _parse_dt(value: Any) -> datetime | None:
 
 
 async def channel_summaries(session: AsyncSession) -> list[dict]:
-    """Channels that are the destination of at least one job, with what an export holds."""
-    rows = await session.execute(
+    """Channels that are the destination of at least one job, with what an export holds.
+
+    What a channel holds is the files whose messages are in it, and a job counts for every
+    channel it writes to, its extra ones included. Each total is its own grouped query:
+    joining them would multiply the rows and every total with them.
+    """
+    jobs_by_channel: dict[int, int] = {}
+    for (channel_id,) in await session.execute(select(SyncJob.channel_id)):
+        jobs_by_channel[channel_id] = jobs_by_channel.get(channel_id, 0) + 1
+    for (channel_id,) in await session.execute(select(SyncJobChannel.channel_id)):
+        jobs_by_channel[channel_id] = jobs_by_channel.get(channel_id, 0) + 1
+
+    file_rows = await session.execute(
         select(
-            Channel.id,
-            Channel.tg_id,
-            Channel.title,
-            TelegramAccount.id,
-            TelegramAccount.label,
-            func.count(func.distinct(SyncJob.id)),
+            FileEntry.channel_id,
             func.count(FileEntry.id),
             func.coalesce(func.sum(FileEntry.size), 0),
-        )
-        .join(SyncJob, SyncJob.channel_id == Channel.id)
-        .join(TelegramAccount, TelegramAccount.id == Channel.account_id)
-        .outerjoin(FileEntry, FileEntry.job_id == SyncJob.id)
-        .group_by(Channel.id)
-        .order_by(Channel.title)
+        ).group_by(FileEntry.channel_id)
     )
+    files_by_channel = {channel_id: (files, size) for channel_id, files, size in file_rows}
 
-    # Counted apart: joining the parts too would multiply the file rows and every other
-    # total with them.
     part_rows = await session.execute(
-        select(SyncJob.channel_id, func.count(FilePart.id))
-        .join(FileEntry, FileEntry.job_id == SyncJob.id)
+        select(FileEntry.channel_id, func.count(FilePart.id))
         .join(FilePart, FilePart.file_id == FileEntry.id)
-        .group_by(SyncJob.channel_id)
+        .group_by(FileEntry.channel_id)
     )
     parts_by_channel = dict(part_rows.all())
+
+    rows = await session.execute(
+        select(Channel.id, Channel.tg_id, Channel.title, TelegramAccount.id, TelegramAccount.label)
+        .join(TelegramAccount, TelegramAccount.id == Channel.account_id)
+        .where(Channel.id.in_(list(jobs_by_channel)))
+        .order_by(Channel.title)
+    )
 
     return [
         {
@@ -112,12 +127,12 @@ async def channel_summaries(session: AsyncSession) -> list[dict]:
             "title": title,
             "account_id": account_id,
             "account_label": account_label,
-            "jobs": jobs,
-            "files": files,
+            "jobs": jobs_by_channel.get(channel_id, 0),
+            "files": files_by_channel.get(channel_id, (0, 0))[0],
             "parts": parts_by_channel.get(channel_id, 0),
-            "bytes_total": bytes_total or 0,
+            "bytes_total": files_by_channel.get(channel_id, (0, 0))[1] or 0,
         }
-        for channel_id, tg_id, title, account_id, account_label, jobs, files, bytes_total in rows
+        for channel_id, tg_id, title, account_id, account_label in rows
     ]
 
 
@@ -134,8 +149,11 @@ async def build_export(session: AsyncSession, channel_id: int) -> dict:
         else None
     )
 
+    # Every job writing here, and of each only the files whose messages are in this
+    # channel: a job spread over several channels is exported one channel at a time, and
+    # each file travels with the export of the channel that actually holds it.
     jobs_result = await session.execute(
-        select(SyncJob).where(SyncJob.channel_id == channel_id).order_by(SyncJob.id)
+        select(SyncJob).where(SyncJob.id.in_(writer_jobs([channel_id]))).order_by(SyncJob.id)
     )
 
     jobs: list[dict] = []
@@ -153,7 +171,7 @@ async def build_export(session: AsyncSession, channel_id: int) -> dict:
                 FilePart.message_id,
             )
             .join(FileEntry, FileEntry.id == FilePart.file_id)
-            .where(FileEntry.job_id == job.id)
+            .where(FileEntry.job_id == job.id, FileEntry.channel_id == channel_id)
             .order_by(FilePart.file_id, FilePart.part_index)
         )
         parts_by_file: dict[int, list[dict]] = {}
@@ -163,7 +181,9 @@ async def build_export(session: AsyncSession, channel_id: int) -> dict:
             )
 
         files_result = await session.execute(
-            select(FileEntry).where(FileEntry.job_id == job.id).order_by(FileEntry.rel_path)
+            select(FileEntry)
+            .where(FileEntry.job_id == job.id, FileEntry.channel_id == channel_id)
+            .order_by(FileEntry.rel_path)
         )
         files: list[dict] = []
         for entry in files_result.scalars():
@@ -188,9 +208,20 @@ async def build_export(session: AsyncSession, channel_id: int) -> dict:
             total_bytes += entry.size
 
         total_files += len(files)
+        spread = await job_channel_ids(session, job)
+        tg_ids = dict(
+            (
+                await session.execute(
+                    select(Channel.id, Channel.tg_id).where(Channel.id.in_(spread))
+                )
+            ).all()
+        )
         jobs.append(
             {
                 "name": job.name,
+                # The Telegram ids of every channel the job writes to, its own first. An
+                # import of another of them finds the job it created here through this.
+                "channels": [tg_ids[cid] for cid in spread if cid in tg_ids],
                 "source_type": job.source_type,
                 "local_path": job.local_path,
                 "remote": job.remote,
@@ -389,7 +420,9 @@ async def _resolve_channel(
     return channel, created
 
 
-def _file_rows(job_id: int, files: list[dict]) -> tuple[list[dict], dict[str, list[dict]]]:
+def _file_rows(
+    job_id: int, channel_id: int, files: list[dict]
+) -> tuple[list[dict], dict[str, list[dict]]]:
     rows: list[dict] = []
     parts_by_path: dict[str, list[dict]] = {}
     for item in files:
@@ -407,6 +440,7 @@ def _file_rows(job_id: int, files: list[dict]) -> tuple[list[dict], dict[str, li
         rows.append(
             {
                 "job_id": job_id,
+                "channel_id": channel_id,
                 "rel_path": rel_path,
                 "name": item.get("name") or rel_path.rsplit("/", 1)[-1],
                 "size": int(item.get("size") or 0),
@@ -484,8 +518,40 @@ async def import_payload(
         job = None
         if merge:
             job = await session.scalar(
-                select(SyncJob).where(SyncJob.channel_id == channel.id, SyncJob.name == name)
+                select(SyncJob)
+                .where(SyncJob.id.in_(writer_jobs([channel.id])), SyncJob.name == name)
+                .limit(1)
             )
+            exported_channels = {int(tg) for tg in job_payload.get("channels") or [] if tg}
+            if job is None and exported_channels:
+                # A job spread over several channels arrives one export per channel. The
+                # first import created it on its own channel; this one finds it by name
+                # among the jobs writing to any channel the export says it was spread
+                # over, and adds this channel to it instead of creating a second job.
+                candidates = await session.execute(
+                    select(SyncJob).where(
+                        SyncJob.name == name,
+                        or_(SyncJob.account_id == account.id, SyncJob.bot_set_id.is_not(None)),
+                    )
+                )
+                for candidate in candidates.scalars():
+                    spread = await job_channel_ids(session, candidate)
+                    known = set(
+                        (
+                            await session.execute(
+                                select(Channel.tg_id).where(Channel.id.in_(spread))
+                            )
+                        ).scalars()
+                    )
+                    if known & exported_channels:
+                        job = candidate
+                        session.add(SyncJobChannel(job_id=job.id, channel_id=channel.id))
+                        await session.flush()
+                        warnings.append(
+                            f"{channel.title} was added to the channels of the job {name}, "
+                            "which the export says it is spread over"
+                        )
+                        break
 
         if job is None:
             # The name is kept as exported, even if this instance already has one like it.
@@ -514,7 +580,7 @@ async def import_payload(
         else:
             action = "merged"
 
-        rows, parts_by_path = _file_rows(job.id, files)
+        rows, parts_by_path = _file_rows(job.id, channel.id, files)
         skipped = 0
         if action == "merged":
             known = await session.execute(

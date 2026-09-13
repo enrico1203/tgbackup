@@ -98,7 +98,8 @@ export default function JobActivity({ progress }: { progress: JobProgress }) {
               className="mono truncate"
               style={{ color: "var(--muted)", fontSize: 12 }}
             >
-              {worker.label}: {worker.current_file}
+              {worker.label}
+              {worker.channel ? ` to ${worker.channel}` : ""}: {worker.current_file}
               {worker.current_parts > 1
                 ? ` (part ${worker.current_part} of ${worker.current_parts})`
                 : ""}
@@ -110,6 +111,9 @@ export default function JobActivity({ progress }: { progress: JobProgress }) {
           {progress.current_file ?? "preparing"}
           {progress.current_parts > 1
             ? ` (part ${progress.current_part} of ${progress.current_parts})`
+            : ""}
+          {progress.current_file && progress.workers?.[0]?.channel
+            ? ` to ${progress.workers[0].channel}`
             : ""}
         </div>
       )}

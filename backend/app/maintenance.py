@@ -39,6 +39,7 @@ from sqlalchemy import select, update
 from telethon.errors import FloodWaitError
 
 from . import notify
+from .channels import writer_jobs
 from .db import SessionLocal
 from .models import (
     MTIME_UNKNOWN,
@@ -181,11 +182,15 @@ def _reader_account(channel: Channel) -> int:
 
 
 async def running_job_on(session, channel_id: int) -> str | None:
-    """The name of a sync job running on this channel, if there is one."""
+    """The name of a sync job running on this channel, if there is one.
+
+    Its own channel or one of its extra ones: a job spread over several writes the index of
+    every one of them.
+    """
     return await session.scalar(
-        select(SyncJob.name).where(
-            SyncJob.channel_id == channel_id, SyncJob.status == "running"
-        )
+        select(SyncJob.name)
+        .where(SyncJob.id.in_(writer_jobs([channel_id])), SyncJob.status == "running")
+        .limit(1)
     )
 
 
@@ -218,9 +223,8 @@ async def check_channel(task: Task, channel_id: int, repair: bool) -> None:
             select(FilePart.message_id, FilePart.size, FilePart.part_index, FileEntry.id)
             .join(FileEntry, FilePart.file_id == FileEntry.id)
             .where(
-                FileEntry.job_id.in_(
-                    select(SyncJob.id).where(SyncJob.channel_id == channel_id)
-                ),
+                # The files whose messages are in this channel, whichever job sent them.
+                FileEntry.channel_id == channel_id,
                 # The trash counts: its messages are in the channel and are exactly the
                 # ones somebody will come looking for, so a check that skipped them would
                 # certify a channel it had not looked at.
@@ -478,6 +482,7 @@ async def rebuild_index(
         rows.append(
             {
                 "job_id": 0,  # filled in once the target job is known
+                "channel_id": channel_id,
                 "rel_path": rel_path,
                 "name": group.name,
                 "size": offset,
@@ -500,7 +505,8 @@ async def rebuild_index(
             if job_id is None:
                 raise MaintenanceError("Pick the job to merge into")
             job = await session.get(SyncJob, job_id)
-            if job is None or job.channel_id != channel_id:
+            writers = set((await session.execute(writer_jobs([channel_id]))).scalars())
+            if job is None or job.id not in writers:
                 raise MaintenanceError("The job does not write to this channel")
             action = "merged"
         else:
@@ -521,12 +527,12 @@ async def rebuild_index(
 
         # What the index already knows is looked up across the whole channel, not only in
         # the target job: a path indexed by another job writing here is already accounted
-        # for, and writing it again would give the same messages two entries.
+        # for, and writing it again would give the same messages two entries. The paths of
+        # the target job count too, wherever they are: a job spread over several channels
+        # holds each path once, and a second entry would break its unique constraint.
         known = await session.execute(
             select(FileEntry.rel_path).where(
-                FileEntry.job_id.in_(
-                    select(SyncJob.id).where(SyncJob.channel_id == channel_id)
-                )
+                (FileEntry.channel_id == channel_id) | (FileEntry.job_id == job.id)
             )
         )
         existing = {rel_path for (rel_path,) in known}

@@ -68,6 +68,7 @@ backend/
   alembic/    env.py versions/ (0001_baseline.py, ...)
   app/
     config.py db.py models.py schemas.py security.py deps.py migrate.py main.py
+    channels.py (the channels a job spreads over, the group a reader opens)
     transfer.py (export and import of a channel index)
     maintenance.py (check of a channel, rebuild of the index from it)
     notify.py (report at the end of a run, to Saved Messages)
@@ -155,6 +156,25 @@ explorer, the export and the check from seeing two channels with one title. The 
 channel through a bot; `channel_for_account` and the import adopt such a row rather than duplicating
 it. Deleting an account is refused while any job writes to a channel it discovered, because those
 rows cascade with it.
+
+**A job spread over several channels** (`channels.py`, `sync_job_channels`, `file_entries.channel_id`,
+revision `0013`): a channel holds about a million messages, so a larger source needs more than one.
+The job keeps `channel_id` as its own channel and gains extra ones; **the channel is recorded on
+every file entry**, and from then on that column, never the channel of the job, is what everything
+reading a file asks: deletions, the explorer ticket and stream, restores, the check, the export.
+`_claim_next` decides it in the same commit that marks the file `uploading`, fewest files wins
+(`channel_fill`, counting every job writing there and no `pending` row), the job's own channel on a
+tie, and a file never moves once placed; a part sent before the entry knew its channel would be a
+message nothing could delete. A pending entry carries the job's channel as a placeholder. Readers
+open the **group**, `channel_group`, the channels that share a sync job with the one asked for,
+followed transitively: the explorer listing, `restore_folder` and a download job read all of them,
+because one backup spread over three channels is still one backup. Channel rows being per account,
+`account_rows` maps each file's row onto the one the reading account holds for the same Telegram id,
+reading its dialogs when it has none. Invariant kept by `_relocate_files` in `api/jobs.py`: every
+channel holding a non-pending file of the job stays among its channels. Moving the job to another
+account repoints the files by Telegram id, taking away a channel that still holds files is refused.
+`writer_jobs` is the one answer to "which jobs write to this channel", extra channels included, and
+it is what the account deletion guard, the maintenance guard and the export ask.
 
 **The upload phase is a worker pool** (`runner.AccountTransport`, `BotSetTransport`, `_upload_worker`):
 the transport is decided once at the start of the run and everything below asks it rather than the
