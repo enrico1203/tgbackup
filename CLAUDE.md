@@ -340,6 +340,17 @@ the notification already carries it, and the only way through is `POST /api/jobs
 which sets a flag the next run consumes whether or not it needed it: an acknowledgement is worth one
 execution, not a permanent disarming. `stale` entries are re-uploads and are not counted.
 
+**The diff is computed in memory and written in chunks** (`_diff`, `DIFF_CHUNK`, measured
+2026-09-13). The first run of a job over an SMB share of 1,794,405 files held one transaction
+with an ORM object per file: seven gigabytes of memory, the write lock of the database for the
+better part of an hour, and Film1 and Film2 failing on `database is locked` while saving their
+status, so they stayed `running` with nothing running. Now the index is read as plain rows, every
+change and the guard verdict are worked out before anything is written, and the writes go out as
+bulk statements of `DIFF_CHUNK` rows, each its own transaction, releasing the lock in between.
+Each change is a valid state of the index on its own, so a run ending between chunks leaves
+nothing the next run cannot pick up; the guard still sees the whole picture because it runs
+before the first write. `busy_timeout` is 60 s for the same reason.
+
 **An unreadable folder is unseen, not emptied** (`source.unreadable`, `runner.unseen`). A Windows
 share walked from its root is full of system folders nobody may open, and `rclone lsjson -R` lists
 everything else and exits 1; before, that failed the whole scan. `_unreadable_folders` accepts the

@@ -14,7 +14,7 @@ import math
 import os
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, insert, select, update
 from telethon.errors import FloodWaitError
 from telethon.tl.types import DocumentAttributeFilename
 
@@ -46,6 +46,10 @@ from .source import build_source
 log = logging.getLogger(__name__)
 
 DELETE_BATCH = 100
+
+# Rows the diff writes per transaction. Small enough that the write lock is released within a
+# fraction of a second, so the other jobs saving a part or a status never wait on it for long.
+DIFF_CHUNK = 5000
 
 
 def part_plan(size: int, part_size: int) -> list[tuple[int, int]]:
@@ -562,111 +566,115 @@ class JobRunner:
         progress.scanned_where = None
         await self._set_phase("diff")
 
+        # Built once and the list dropped: on a source of two million files every copy of
+        # the listing costs the better part of a gigabyte.
         on_disk = {item.rel_path: item for item in found}
+        del found
 
         added = 0
         modified = 0
         revived = 0
+        now = utcnow()
+        started = datetime.now(UTC)
+
+        # Every change is worked out first, in memory and from plain rows rather than ORM
+        # objects, and written afterwards in chunks, each its own transaction. One
+        # transaction holding an object per file was fine at thirty thousand files; at two
+        # million it held the write lock of the database for the better part of an hour,
+        # so every other job failed on `database is locked`, and took seven gigabytes of
+        # memory with it. Each change on its own is a valid state of the index, so a run
+        # that ends between two chunks leaves nothing the next run cannot pick up.
+        # Grouped by the columns they set: a bulk update by primary key needs the same keys
+        # on every row of one statement.
+        back: list[dict] = []  # trashed, and back at the source unchanged
+        stale: list[dict] = []  # content changed, or back at the source changed
+        adopted: list[dict] = []  # rebuilt entry taking the date of the source
+        retried: list[dict] = []  # left in error or half uploaded by the last run
+        removals: list[tuple[int, str]] = []
+        known_paths: set[str] = set()
+        known_count = 0
+        protected = 0
 
         async with SessionLocal() as session:
             result = await session.execute(
-                select(FileEntry).where(FileEntry.job_id == self.job_id)
+                select(
+                    FileEntry.id,
+                    FileEntry.rel_path,
+                    FileEntry.size,
+                    FileEntry.mtime_ns,
+                    FileEntry.state,
+                ).where(FileEntry.job_id == self.job_id)
             )
-            known = {entry.rel_path: entry for entry in result.scalars()}
+            for entry_id, rel_path, size, mtime_ns, state in result:
+                known_count += 1
+                if known_count % 50_000 == 0:
+                    # The rows are already in memory, so this loop never waits and would keep
+                    # the event loop for seconds on a large job: the uploads of the other jobs
+                    # get a turn every fifty thousand.
+                    await asyncio.sleep(0)
+                item = on_disk.get(rel_path)
+                if item is None:
+                    # Only the files that disappeared during this run. One already in the
+                    # trash, or already marked for deletion by a run interrupted before it
+                    # got there, has been counted once and must not be counted again:
+                    # otherwise a legitimate large deletion would trip the guard on every
+                    # run for as long as the retention lasts.
+                    if state in ("trashed", "to_delete"):
+                        continue
+                    if unseen(rel_path, blind):
+                        protected += 1
+                        continue
+                    removals.append((entry_id, state))
+                    continue
 
-            for rel_path, item in on_disk.items():
-                entry = known.get(rel_path)
-                if entry is not None and entry.state == "trashed":
+                known_paths.add(rel_path)
+                if state == "trashed":
                     # Back at the source before the retention ran out. Its messages were
                     # never deleted, so a file put back exactly as it was costs nothing:
                     # the entry returns to `uploaded` and no byte travels. Only a file
                     # that came back different has to be uploaded again.
-                    entry.trashed_at = None
-                    entry.error = None
                     revived += 1
-                    if entry.size == item.size and entry.mtime_ns in (
-                        item.mtime_ns,
-                        MTIME_UNKNOWN,
-                    ):
-                        entry.mtime_ns = item.mtime_ns
-                        entry.name = item.name
-                        entry.state = "uploaded"
-                    else:
-                        entry.size = item.size
-                        entry.mtime_ns = item.mtime_ns
-                        entry.name = item.name
-                        entry.state = "stale"
-                        modified += 1
-                elif entry is None:
-                    session.add(
-                        FileEntry(
-                            job_id=self.job_id,
-                            rel_path=item.rel_path,
-                            name=item.name,
-                            size=item.size,
-                            mtime_ns=item.mtime_ns,
-                            state="pending",
-                            # A placeholder: the channel is chosen when the upload claims
-                            # the file, among those of the job holding the fewest.
-                            channel_id=self._primary,
+                    if size == item.size and mtime_ns in (item.mtime_ns, MTIME_UNKNOWN):
+                        back.append(
+                            {
+                                "id": entry_id,
+                                "mtime_ns": item.mtime_ns,
+                                "name": item.name,
+                                "state": "uploaded",
+                                "trashed_at": None,
+                                "error": None,
+                            }
                         )
-                    )
-                    added += 1
-                elif entry.mtime_ns == MTIME_UNKNOWN and entry.size == item.size:
+                        continue
+                    modified += 1
+                    stale.append(self._stale_row(entry_id, item))
+                elif mtime_ns == MTIME_UNKNOWN and size == item.size:
                     # Rebuilt by reading the channel: the messages carry the name, the
                     # folder and the part number, never the date. The file is up there and
                     # is the right size, so the date of the source is adopted instead of
                     # deleting the whole thing and uploading it again for a field that was
                     # never recorded.
-                    entry.mtime_ns = item.mtime_ns
-                    entry.name = item.name
-                elif entry.size != item.size or entry.mtime_ns != item.mtime_ns:
+                    adopted.append({"id": entry_id, "mtime_ns": item.mtime_ns, "name": item.name})
+                elif size != item.size or mtime_ns != item.mtime_ns:
                     # Content changed: the old parts on Telegram are no longer valid.
-                    entry.size = item.size
-                    entry.mtime_ns = item.mtime_ns
-                    entry.name = item.name
-                    entry.state = "stale"
-                    entry.error = None
                     modified += 1
-                elif entry.state in ("error", "uploading"):
+                    stale.append(self._stale_row(entry_id, item))
+                elif state in ("error", "uploading"):
                     # Retry for files left half done on the previous round, by error or by
                     # a process stop. They go through stale, not pending: the parts already
                     # sent are recorded and must first be deleted from the channel, or they
                     # would stay as orphan messages.
-                    entry.state = "stale"
-                    entry.error = None
-
-            # Only the files that disappeared during this run. One already in the trash,
-            # or already marked for deletion by a run that was interrupted before it got
-            # there, has been counted once and must not be counted again: otherwise a
-            # legitimate large deletion would trip the guard on every run for as long as
-            # the retention lasts.
-            removals = [
-                entry
-                for rel_path, entry in known.items()
-                if rel_path not in on_disk
-                and entry.state not in ("trashed", "to_delete")
-                and not unseen(rel_path, blind)
-            ]
-            protected = (
-                sum(
-                    1
-                    for rel_path in known
-                    if rel_path not in on_disk and unseen(rel_path, blind)
-                )
-                if blind
-                else 0
-            )
+                    retried.append({"id": entry_id, "state": "stale", "error": None})
 
             # Before anything is written: the guard has to be able to leave the index
-            # exactly as it found it. Raising here rolls the whole transaction back, so a
-            # run stopped at this point has neither marked a deletion nor recorded a new
-            # file, and running it again once the source is back gives the same answer it
-            # would have given all along.
+            # exactly as it found it. Nothing has been written yet at this point, so a run
+            # stopped here has neither marked a deletion nor recorded a new file, and
+            # running it again once the source is back gives the same answer it would have
+            # given all along.
             job = await session.get(SyncJob, self.job_id)
             reason = guard_verdict(
                 len(removals),
-                len(known),
+                known_count,
                 job.delete_guard_percent if job else 0,
                 job.delete_guard_files if job else 0,
             )
@@ -681,21 +689,69 @@ class JobRunner:
                 # Consumed whether or not it was needed: an acknowledgement is worth one
                 # run, or it would sit there disarming every run that follows.
                 job.delete_guard_bypass = False
-
             trash_days = job.trash_days if job else 0
-            trashed = 0
-            now = utcnow()
-            for entry in removals:
-                if trash_days > 0 and entry.state == "uploaded":
-                    # Only a file that actually reached the channel is worth keeping: one
-                    # still pending has no message to hold on to, so there is nothing the
-                    # trash could give back and it goes straight out.
-                    entry.state = "trashed"
-                    entry.trashed_at = now
-                    trashed += 1
-                else:
-                    entry.state = "to_delete"
+            await session.commit()
 
+        for rows in (back, stale, adopted, retried):
+            await self._write_chunks(update(FileEntry), rows)
+
+        batch: list[dict] = []
+        for rel_path, item in on_disk.items():
+            if rel_path in known_paths:
+                continue
+            batch.append(
+                {
+                    "job_id": self.job_id,
+                    "rel_path": item.rel_path,
+                    "name": item.name,
+                    "size": item.size,
+                    "mtime_ns": item.mtime_ns,
+                    "state": "pending",
+                    "parts_total": 1,
+                    "error": None,
+                    "first_seen_at": now,
+                    "uploaded_at": None,
+                    "trashed_at": None,
+                    # A placeholder: the channel is chosen when the upload claims the
+                    # file, among those of the job holding the fewest.
+                    "channel_id": self._primary,
+                }
+            )
+            if len(batch) >= DIFF_CHUNK:
+                await self._write_chunks(insert(FileEntry), batch)
+                added += len(batch)
+                batch = []
+        if batch:
+            await self._write_chunks(insert(FileEntry), batch)
+            added += len(batch)
+        known_paths.clear()
+
+        # Only a file that actually reached the channel is worth keeping: one still pending
+        # has no message to hold on to, so there is nothing the trash could give back and
+        # it goes straight out.
+        to_trash = [
+            {"id": entry_id, "state": "trashed", "trashed_at": now}
+            for entry_id, state in removals
+            if trash_days > 0 and state == "uploaded"
+        ]
+        to_delete = [
+            {"id": entry_id, "state": "to_delete"}
+            for entry_id, state in removals
+            if not (trash_days > 0 and state == "uploaded")
+        ]
+        trashed = len(to_trash)
+        await self._write_chunks(update(FileEntry), to_trash)
+        await self._write_chunks(update(FileEntry), to_delete)
+
+        log.info(
+            "Job %d compared %d files with %d indexed in %.0f s: %d new, %d modified, "
+            "%d revived, %d removed",
+            self.job_id, len(on_disk), known_count,
+            (datetime.now(UTC) - started).total_seconds(),
+            added, modified, revived, len(removals),
+        )
+
+        async with SessionLocal() as session:
             run = await session.get(JobRun, run_id)
             if run is not None:
                 run.scanned = len(on_disk)
@@ -731,6 +787,31 @@ class JobRunner:
             "trashed": trashed,
             "revived": revived,
         }
+
+    @staticmethod
+    def _stale_row(entry_id: int, item) -> dict:
+        """The update that marks an entry for re-upload with what the source says now."""
+        return {
+            "id": entry_id,
+            "size": item.size,
+            "mtime_ns": item.mtime_ns,
+            "name": item.name,
+            "state": "stale",
+            "trashed_at": None,
+            "error": None,
+        }
+
+    async def _write_chunks(self, statement, rows: list[dict]) -> None:
+        """Runs a bulk statement over the rows, `DIFF_CHUNK` at a time, one transaction each.
+
+        Yielding between the chunks is what lets the other jobs in: the write lock goes back
+        to them at every commit instead of once at the end of two million rows.
+        """
+        for start in range(0, len(rows), DIFF_CHUNK):
+            async with SessionLocal() as session:
+                await session.execute(statement, rows[start : start + DIFF_CHUNK])
+                await session.commit()
+            await asyncio.sleep(0)
 
     async def _purge_trash(self, trash_days: int) -> int:
         """Sends the expired trash on to the deletion phase. Returns how many.

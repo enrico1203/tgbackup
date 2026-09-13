@@ -22,7 +22,11 @@ def _sqlite_pragmas(dbapi_connection, _record):
     cursor.execute("PRAGMA journal_mode=WAL")
     cursor.execute("PRAGMA synchronous=NORMAL")
     cursor.execute("PRAGMA foreign_keys=ON")
-    cursor.execute("PRAGMA busy_timeout=10000")
+    # A minute and not ten seconds: a writer waiting here waits in the thread of its
+    # connection, not in the event loop, and ten seconds was short enough that a job
+    # writing a large index made the others fail right while they saved their own status,
+    # leaving them "running" with nothing running.
+    cursor.execute("PRAGMA busy_timeout=60000")
     cursor.close()
 
 
