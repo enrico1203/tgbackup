@@ -340,6 +340,17 @@ the notification already carries it, and the only way through is `POST /api/jobs
 which sets a flag the next run consumes whether or not it needed it: an acknowledgement is worth one
 execution, not a permanent disarming. `stale` entries are re-uploads and are not counted.
 
+**An unreadable folder is unseen, not emptied** (`source.unreadable`, `runner.unseen`). A Windows
+share walked from its root is full of system folders nobody may open, and `rclone lsjson -R` lists
+everything else and exits 1; before, that failed the whole scan. `_unreadable_folders` accepts the
+exit only when every ERROR line is `<relative path>: error listing: ...`: a target that cannot be
+reached logs `error listing: ...` with no path and still fails, and so does any line not recognised.
+The local scanner records the same, and fails when the root itself cannot be opened. In `_diff`
+every indexed path that is, or sits below, something unread is left out of the removals, so a
+permission that flickers can never trash or delete that part of the channel; the count and the
+first paths go on `run.error` of a run that ends `ok`, and into the report. stderr is read beside
+stdout, since thousands of such lines would otherwise fill the pipe and stall rclone.
+
 **Trash instead of immediate deletion** (`trash_days` on the job, `trashed` state, `trashed_at` on
 the entry): a file that disappears from the source stops being deleted within the run that noticed
 and becomes `trashed`, keeping every one of its parts. Telegram charges nothing for the space, so

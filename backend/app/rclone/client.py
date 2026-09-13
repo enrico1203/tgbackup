@@ -55,6 +55,41 @@ def _clean_error(raw: bytes | str) -> str:
     return " | ".join(lines)[:400] or "unknown error"
 
 
+_LOG_LINE = re.compile(
+    r"^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}\s+(?P<level>[A-Z]+)\s*:\s*(?P<message>.*)$"
+)
+# "Documents/My Music: error listing: open Default\Documents\My Music: permission denied".
+# The path is relative to the target; a failure of the target itself has no path at all
+# ("error listing: couldn't initialize SMB: ...") and never matches.
+_UNREADABLE = re.compile(r"^(?P<path>.+?): error listing: (?P<reason>.+)$")
+
+
+def _unreadable_folders(raw: bytes) -> list[tuple[str, str]] | None:
+    """The folders below the target a recursive listing could not open, with the reason.
+
+    None unless every error rclone reported is exactly that. A Windows share walked from
+    its root is full of system folders nobody may open, and rclone lists everything else
+    and exits 1: that is a listing worth having. Anything else, an unreachable remote, a
+    root that cannot be read, a line this does not recognise, is still a failure.
+    """
+    folders: list[tuple[str, str]] = []
+    for line in raw.decode(errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        logged = _LOG_LINE.match(line)
+        if logged is None:
+            return None
+        if logged["level"] not in ("ERROR", "CRITICAL"):
+            # The closing "Failed to lsjson with 14 errors" is a NOTICE and says nothing new.
+            continue
+        found = _UNREADABLE.match(logged["message"])
+        if found is None or not found["path"].strip("/ "):
+            return None
+        folders.append((found["path"].strip("/"), found["reason"]))
+    return folders or None
+
+
 @dataclass(slots=True)
 class RemoteFile:
     path: str
@@ -121,6 +156,7 @@ async def _stream_lsjson(
     timeout: float,
     max_items: int | None = None,
     on_item=None,
+    unreadable: list[tuple[str, str]] | None = None,
 ) -> list[dict]:
     """Reads lsjson output as it arrives, stopping once there is enough.
 
@@ -129,6 +165,9 @@ async def _stream_lsjson(
     is reached: listing the first entries of a folder holding tens of thousands of files
     then costs the same as listing a small one, instead of waiting for every name to be
     decrypted.
+
+    With `unreadable` given, a listing that failed only on subfolders it could not open is
+    returned rather than raised, and those folders are appended to the list.
     """
     process = await asyncio.create_subprocess_exec(
         RCLONE,
@@ -177,11 +216,19 @@ async def _stream_lsjson(
                 stopped_early = True
                 return
 
+    # Read beside stdout and not after it: a share with thousands of unreadable folders
+    # writes a line for each, and a stderr pipe left full stops rclone halfway through the
+    # listing with nobody reading either end.
+    stderr_task = asyncio.create_task(
+        process.stderr.read() if process.stderr is not None else asyncio.sleep(0, b"")
+    )
+
     try:
         await asyncio.wait_for(pump(), timeout)
     except TimeoutError:
         process.kill()
         await process.wait()
+        stderr_task.cancel()
         raise RcloneError(
             f"rclone did not answer within {timeout:.0f} seconds for {target}"
         ) from None
@@ -191,13 +238,16 @@ async def _stream_lsjson(
         if process.returncode is None:
             process.kill()
         await process.wait()
+        stderr_task.cancel()
         return items
 
-    stderr = b""
-    if process.stderr is not None:
-        stderr = await process.stderr.read()
+    stderr = await stderr_task
     await process.wait()
     if process.returncode != 0:
+        skipped = _unreadable_folders(stderr) if unreadable is not None else None
+        if skipped:
+            unreadable.extend(skipped)
+            return items
         raise RcloneError(
             _clean_error(stderr) if stderr else f"lsjson of {target} failed"
         )
@@ -280,13 +330,17 @@ def _parse_mtime(value: str) -> int:
 
 
 async def list_files(
-    remote: str, on_progress=None, timeout: float | None = None
+    remote: str,
+    on_progress=None,
+    timeout: float | None = None,
+    unreadable: list[tuple[str, str]] | None = None,
 ) -> list[RemoteFile]:
     """Recursively lists the files of a remote, reporting progress.
 
     On remotes with hundreds of thousands of files the listing takes minutes: reading it
     as a stream makes it possible to show how many files have been found so far instead of
-    staying silent until the end.
+    staying silent until the end. `unreadable`, when given, collects the subfolders that
+    could not be opened instead of failing the listing on them.
     """
     files: list[RemoteFile] = []
     total = {"bytes": 0}
@@ -314,6 +368,7 @@ async def list_files(
         ["-R", "--files-only", "--no-mimetype"],
         timeout=timeout if timeout is not None else settings.rclone_list_timeout,
         on_item=collect,
+        unreadable=unreadable,
     )
 
     if on_progress is not None:

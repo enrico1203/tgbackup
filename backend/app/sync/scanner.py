@@ -31,7 +31,11 @@ class ScannedFile:
     mtime_ns: int
 
 
-def _walk(root: str, on_progress: ScanProgress | None = None) -> list[ScannedFile]:
+def _walk(
+    root: str,
+    on_progress: ScanProgress | None = None,
+    unreadable: list[tuple[str, str]] | None = None,
+) -> list[ScannedFile]:
     """Recursive walk with os.scandir, without following symbolic links.
 
     scandir reuses the directory entry data, so is_dir and is_file often cost no extra
@@ -70,8 +74,18 @@ def _walk(root: str, on_progress: ScanProgress | None = None) -> list[ScannedFil
                             total_bytes += info.st_size
                     except OSError as exc:
                         log.warning("Entry skipped %s: %s", entry.path, exc)
+                        if unreadable is not None:
+                            unreadable.append((os.path.relpath(entry.path, root), str(exc)))
         except OSError as exc:
+            if current == root:
+                # Nothing below it was seen, and an empty listing reads as a source where
+                # everything was deleted: the run fails instead.
+                raise
             log.warning("Folder not readable %s: %s", current, exc)
+            # Recorded, so the runner leaves what the index holds below it as it is: a
+            # folder that could not be opened is unseen, not emptied.
+            if unreadable is not None:
+                unreadable.append((os.path.relpath(current, root), str(exc)))
 
         since_report += 1
         if on_progress is not None and since_report >= REPORT_EVERY:
@@ -85,7 +99,10 @@ def _walk(root: str, on_progress: ScanProgress | None = None) -> list[ScannedFil
 
 
 async def scan(
-    root: str, files_per_sec: int = 0, on_progress: ScanProgress | None = None
+    root: str,
+    files_per_sec: int = 0,
+    on_progress: ScanProgress | None = None,
+    unreadable: list[tuple[str, str]] | None = None,
 ) -> list[ScannedFile]:
     """Scans `root` in a thread, with optional throttling.
 
@@ -98,7 +115,7 @@ async def scan(
     if not await asyncio.to_thread(os.path.isdir, root):
         raise FileNotFoundError(f"Folder {root} does not exist inside the container")
 
-    files = await asyncio.to_thread(_walk, root, on_progress)
+    files = await asyncio.to_thread(_walk, root, on_progress, unreadable)
 
     if files_per_sec > 0:
         # The walk is already over: the pause owed is spread across chunks, so the rest

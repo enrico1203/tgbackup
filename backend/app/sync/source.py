@@ -38,6 +38,8 @@ class LocalSource:
         self.root = root
         self.files_per_sec = files_per_sec
         self.filter = file_filter or FileFilter()
+        # What the last listing could not read, relative paths with the reason.
+        self.unreadable: list[tuple[str, str]] = []
 
     @property
     def label(self) -> str:
@@ -48,7 +50,10 @@ class LocalSource:
             if on_progress is not None:
                 on_progress(files, dirs, total_bytes, where)
 
-        found: list[ScannedFile] = await scan(self.root, self.files_per_sec, on_progress=report)
+        self.unreadable = []
+        found: list[ScannedFile] = await scan(
+            self.root, self.files_per_sec, on_progress=report, unreadable=self.unreadable
+        )
         kept = [
             SourceFile(item.rel_path, item.name, item.size, item.mtime_ns)
             for item in found
@@ -68,6 +73,8 @@ class RcloneSource:
         # Normalized once: "name:" or "name:subfolder".
         self.remote = remote.strip()
         self.filter = file_filter or FileFilter()
+        # The subfolders the last listing could not open, relative paths with the reason.
+        self.unreadable: list[tuple[str, str]] = []
 
     @property
     def label(self) -> str:
@@ -79,7 +86,10 @@ class RcloneSource:
                 # A remote reports no folder count: it stays at zero.
                 on_progress(files, 0, total_bytes, where)
 
-        found = await rclone.list_files(self.remote, on_progress=report)
+        self.unreadable = []
+        found = await rclone.list_files(
+            self.remote, on_progress=report, unreadable=self.unreadable
+        )
         kept = [
             SourceFile(item.path, item.name, item.size, item.mtime_ns)
             for item in found

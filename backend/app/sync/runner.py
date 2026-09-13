@@ -84,6 +84,14 @@ def part_file_name(name: str, index: int, total: int) -> str:
     return f"{name}.part{index + 1:0{width}d}"
 
 
+def unseen(rel_path: str, blind: set[str]) -> bool:
+    """Whether a path is, or sits below, something the source could not read."""
+    if not blind:
+        return False
+    parts = rel_path.split("/")
+    return any("/".join(parts[:depth]) in blind for depth in range(1, len(parts) + 1))
+
+
 class JobCancelled(Exception):
     pass
 
@@ -544,6 +552,12 @@ class JobRunner:
         found = await source.list_files(on_progress=report)
         self._check_cancel()
 
+        # Folders and files the source could not read. What the index holds under them is
+        # not gone, only unseen, so it is left exactly as it is: taken for deleted, it would
+        # be trashed or removed from the channel the first time a permission flickered.
+        unreadable = list(getattr(source, "unreadable", []))
+        blind = {path for path, _ in unreadable}
+
         progress.phase = "diff"
         progress.scanned_where = None
         await self._set_phase("diff")
@@ -630,8 +644,19 @@ class JobRunner:
             removals = [
                 entry
                 for rel_path, entry in known.items()
-                if rel_path not in on_disk and entry.state not in ("trashed", "to_delete")
+                if rel_path not in on_disk
+                and entry.state not in ("trashed", "to_delete")
+                and not unseen(rel_path, blind)
             ]
+            protected = (
+                sum(
+                    1
+                    for rel_path in known
+                    if rel_path not in on_disk and unseen(rel_path, blind)
+                )
+                if blind
+                else 0
+            )
 
             # Before anything is written: the guard has to be able to leave the index
             # exactly as it found it. Raising here rolls the whole transaction back, so a
@@ -678,7 +703,26 @@ class JobRunner:
                 run.modified = modified
                 run.trashed = trashed
                 run.revived = revived
+                if unreadable:
+                    # On the run and not only in the log: a run that went through while
+                    # part of the source stayed closed has to say so the morning after.
+                    names = ", ".join(path for path, _ in unreadable[:5])
+                    more = f" and {len(unreadable) - 5} more" if len(unreadable) > 5 else ""
+                    run.error = (
+                        f"Skipped {len(unreadable)} folders or files that could not be read "
+                        f"({names}{more}); {protected} indexed files under them were left "
+                        "as they are"
+                    )[:1000]
             await session.commit()
+
+        if unreadable:
+            log.warning(
+                "Job %d: %d folders or files of the source could not be read, %d indexed "
+                "files under them left untouched",
+                self.job_id, len(unreadable), protected,
+            )
+            for path, reason in unreadable[:20]:
+                log.warning("Job %d: not readable %s: %s", self.job_id, path, reason)
 
         return {
             "scanned": len(on_disk),
@@ -1237,6 +1281,10 @@ async def _report(job_id: int, status: str, error: str | None) -> None:
         lines.append(f"Files in error: {failed_files}")
     if error:
         lines.append(f"Error: {error}")
+    elif run is not None and run.error:
+        # A run that completed can still carry a note, the parts of the source it could
+        # not read.
+        lines.append(run.error)
 
     await notify.send_report(
         account_id=account_id,
