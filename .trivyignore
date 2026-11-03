@@ -13,3 +13,11 @@
 # rclone that carried the fixes. rclone 1.75.0 is that release: it links x/text 0.40.0
 # and grpc 1.84.0-dev, and the binary now reports no findings at all, not even MEDIUM.
 # The entries were deleted rather than left to expire, which is what the date was for.
+
+# crypto/x509 in the Go 1.26.9 standard library statically linked into the official
+# rclone binary. rclone 1.75.2 is the latest release and no build on Go 1.26.10 exists
+# yet. The fix is a denylist of intermediate certificates no longer trusted; rclone in
+# this image verifies against the Alpine ca-certificates, which apk upgrade keeps
+# current, so the exposure is the narrow case the denylist exists for. Delete the entry
+# once an rclone release links Go 1.26.10 or later.
+CVE-2026-111943 exp:2026-12-15

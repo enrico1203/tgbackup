@@ -1,6 +1,6 @@
 # cryptg publishes no musllinux wheel: on Alpine it has to be compiled with Rust.
 # Without cryptg, Telethon's AES-IGE runs in pure Python and the upload becomes CPU-bound.
-FROM python:3.14.6-alpine AS builder
+FROM python:3.14.10-alpine AS builder
 
 RUN apk add --no-cache build-base musl-dev libffi-dev openssl-dev rust cargo
 
@@ -18,7 +18,7 @@ FROM alpine:3.24 AS rclone
 # archives the same way, amd64 and arm64: the published image is one manifest holding
 # both. The default is only there for a builder old enough not to set it.
 ARG TARGETARCH=amd64
-ARG RCLONE_VERSION=1.75.0
+ARG RCLONE_VERSION=1.75.2
 RUN apk add --no-cache curl unzip \
     && curl -fsSL -o /tmp/rclone.zip \
         "https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-${TARGETARCH}.zip" \
@@ -27,15 +27,21 @@ RUN apk add --no-cache curl unzip \
     && chmod 755 /usr/local/bin/rclone
 
 
-FROM python:3.14.6-alpine
+FROM python:3.14.10-alpine
 
-RUN apk add --no-cache libgcc libstdc++ tzdata fuse3
+# apk upgrade: the base image is rebuilt on its own schedule and lags behind on openssl
+# and util-linux, whose fixes are already in the Alpine repositories.
+RUN apk upgrade --no-cache && apk add --no-cache libgcc libstdc++ tzdata fuse3
 COPY --from=rclone /usr/local/bin/rclone /usr/local/bin/rclone
 
 COPY --from=builder /wheels /wheels
 COPY requirements.txt .
+# pip goes once the wheels are in: nothing runs it at runtime, and the urllib3 and
+# msgpack it vendors were the only Python findings left in the image.
 RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt \
-    && rm -rf /wheels requirements.txt
+    && rm -rf /wheels requirements.txt \
+    && pip uninstall -y pip \
+    && rm -rf /usr/local/lib/python3.14/ensurepip
 
 WORKDIR /app
 COPY app ./app

@@ -18,6 +18,10 @@ RUN npm run build
 
 FROM nginx:alpine
 
+# nginx:alpine is rebuilt on its own schedule and lags behind on brotli, curl and expat,
+# whose fixes are already in the Alpine repositories.
+RUN apk upgrade --no-cache
+
 COPY --from=builder /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 

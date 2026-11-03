@@ -8,6 +8,6 @@ pydantic-settings==2.14.2
 telethon==1.44.0
 cryptg==0.6.0
 cryptography==50.0.0
-pyjwt==2.13.0
+pyjwt==2.15.1
 argon2-cffi==25.1.0
 python-multipart==0.0.32
